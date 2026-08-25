@@ -3,4 +3,7 @@ python-dotenv==1.0.0
 phonenumbers==8.13.18
 requests==2.31.0
 aiohttp==3.9.5
-supabase==2.4.0
+supabase==2.5.0
+httpx==0.27.2
+gotrue==2.8.1
+postgrest==0.16.1
