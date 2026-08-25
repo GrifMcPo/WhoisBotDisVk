@@ -10,9 +10,13 @@ from typing import Optional, List
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery, BusinessMessage
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.client.default import DefaultBotProperties
+
+# ДЛЯ BUSINESS MESSAGE В Aiogram 3.5.0
+from aiogram.types.business_connection import BusinessConnection
+from aiogram.types.business_message import BusinessMessage
 
 # МОЩНОЕ ЛОГИРОВАНИЕ
 logging.basicConfig(
@@ -394,6 +398,107 @@ async def delete_message(target, message_id):
 
 # ─── ОБРАБОТЧИК БИЗНЕС-СООБЩЕНИЙ (Business API) ───
 
+@dp.message(F.text & F.chat.type.in_({'private'}))  # ЛС команды
+async def handle_dm_message(message: Message):
+    """Обработка личных сообщений боту (/команды)"""
+    user_id = message.from_user.id
+    text = message.text or ""
+    
+    # Только команды с /
+    if not text.startswith('/'):
+        return
+    
+    logger.info(f'📩 [DM MESSAGE] от {user_id}: "{text[:100]}"')
+    
+    # Проверка бана
+    ban = await is_banned(user_id)
+    if ban:
+        if user_id not in banned_notified:
+            banned_notified.add(user_id)
+            await message.answer('⛔ ВЫ ЗАБЛОКИРОВАНЫ В БОТЕ!')
+        return
+    
+    # Тех работы
+    global maintenance_mode, maintenance_until
+    if maintenance_mode and not is_admin(user_id):
+        if maintenance_until and datetime.now().isoformat() > maintenance_until:
+            maintenance_mode = False
+        else:
+            await message.answer(
+                f'🛠️ БОТ НА ТЕХНИЧЕСКИХ РАБОТАХ\n\n'
+                f'🕐 ВРЕМЯ: до {datetime.fromisoformat(maintenance_until).strftime("%Y-%m-%d %H:%M:%S")}'
+            )
+            return
+    
+    await save_user(user_id, message.from_user.username, message.from_user.first_name)
+    await log_command(user_id, message.from_user.username, text)
+    
+    parts = text[1:].split()
+    if not parts:
+        return
+    
+    cmd = parts[0].lower()
+    args = parts[1:] if len(parts) > 1 else []
+    
+    # /start
+    if cmd == 'start':
+        await message.answer(
+            '👋 Привет! Я бот для пробива информации.\n\n'
+            'Выбери действие:',
+            reply_markup=get_menu_keyboard()
+        )
+        return
+    
+    # /menu
+    if cmd == 'menu':
+        await message.answer(
+            '📋 МЕНЮ БОТА\n\nВыберите действие:',
+            reply_markup=get_menu_keyboard()
+        )
+        return
+    
+    # /help
+    if cmd == 'help':
+        await message.answer(HELP_TEXT)
+        return
+    
+    # Админ команды
+    if not is_admin(user_id):
+        logger.warning(f'⛔ Не-админ {user_id} пытался использовать /{cmd}')
+        return
+    
+    if cmd == 'ban':
+        await handle_ban(message, args)
+        return
+    
+    if cmd == 'unban':
+        await handle_unban(message, args)
+        return
+    
+    if cmd == 'chkban':
+        await handle_chkban(message, args)
+        return
+    
+    if cmd == 'logs':
+        await handle_logs(message, args)
+        return
+    
+    if cmd == 'idlist':
+        await handle_idlist(message)
+        return
+    
+    if cmd == 'key':
+        await handle_key(message)
+        return
+    
+    if cmd == 'tex':
+        await handle_tex(message, args)
+        return
+    
+    await message.answer(f'❌ Неизвестная команда: {cmd}')
+
+# ─── ОБРАБОТЧИК BUSINESS MESSAGE ───
+
 @dp.business_message()
 async def handle_business_message(message: BusinessMessage):
     """
@@ -531,46 +636,6 @@ async def handle_business_message(message: BusinessMessage):
         return
     
     await message.answer(f'❌ Неизвестная команда: {cmd}')
-
-# ─── ОБРАБОТЧИК ЛС КОМАНД (/start, /menu и т.д.) ───
-
-@dp.message(Command("start"))
-async def cmd_start(message: Message):
-    user_id = message.from_user.id
-    username = message.from_user.username
-    
-    logger.info(f'🔄 [DM] /start от {user_id}')
-    
-    # Проверка бана
-    ban = await is_banned(user_id)
-    if ban:
-        if user_id not in banned_notified:
-            banned_notified.add(user_id)
-            if ban.get('forever', False):
-                await message.answer('⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ НАВСЕГДА')
-            else:
-                await message.answer(f'⛔ ВЫ ЗАБЛОКИРОВАНЫ\nПричина: {ban["reason"]}')
-        return
-    
-    await save_user(user_id, username, message.from_user.first_name)
-    await log_command(user_id, username, '/start')
-    
-    await message.answer(
-        '👋 Привет! Я бот для пробива информации.\n\n'
-        'Выбери действие:',
-        reply_markup=get_menu_keyboard()
-    )
-
-@dp.message(Command("menu"))
-async def cmd_menu(message: Message):
-    await message.answer(
-        '📋 МЕНЮ БОТА\n\nВыберите действие:',
-        reply_markup=get_menu_keyboard()
-    )
-
-@dp.message(Command("help"))
-async def cmd_help(message: Message):
-    await message.answer(HELP_TEXT)
 
 # ─── ОБРАБОТЧИК ВВОДА ДАННЫХ ───
 
