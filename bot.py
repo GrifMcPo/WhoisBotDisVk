@@ -641,26 +641,6 @@ def get_main_keyboard():
         [InlineKeyboardButton(text="👤 ПРОБИВ ЮЗЕРА", callback_data="probe_user")],
     ])
 
-# ========== BUSINESS CONNECTION ==========
-@dp.message(F.business_connection_id.is_not(None))
-async def handle_business_connection(message: types.Message):
-    connection_id = message.business_connection_id
-    user_id = message.from_user.id
-    username = message.from_user.username or "Нет юзернейма"
-    
-    if str(user_id) not in business_connections:
-        if not is_admin(user_id):
-            return
-        
-        business_connections[str(user_id)] = connection_id
-        
-        logger.info(f"🔗 BUSINESS CONNECTION: @{username} (ID: {user_id})")
-        
-        await bot.send_message(
-            chat_id=user_id,
-            text=f"✅ БОТ ПОДКЛЮЧЕН К БИЗНЕС-АККАУНТУ!\n\n🆔 ID: {user_id}\n📌 Команды работают в чатах с собеседниками!\n🔥 Введите .help для списка команд"
-        )
-
 # ========== BUSINESS MESSAGE ==========
 @dp.message(F.business_connection_id.is_not(None))
 async def handle_business_message(message: types.Message):
@@ -1150,8 +1130,8 @@ async def handle_callback(callback: types.CallbackQuery):
         await callback.message.answer("👤 ВВЕДИТЕ @USERNAME\n📌 Пример: @username")
     await callback.answer()
 
-# ========== ЛИЧНЫЕ СООБЩЕНИЯ ==========
-@dp.message()
+# ========== ЛИЧНЫЕ СООБЩЕНИЯ (ТОЛЬКО ДЛЯ ЛИЧКИ) ==========
+@dp.message(F.business_connection_id.is_(None))
 async def handle_private_message(message: types.Message):
     user_id = message.from_user.id
     
