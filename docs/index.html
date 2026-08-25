@@ -3,8 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <title>Whois Admin</title>
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css?v=2.0">
 </head>
 <body>
     <div class="container" id="app">
@@ -16,6 +19,7 @@
                 <input type="text" id="keyInput" placeholder="ADMIN_XXXXX">
                 <button onclick="login()">Войти</button>
                 <div id="loginError" class="error"></div>
+                <div id="loginLoading" style="display:none;color:#4a9eff;">⏳ Проверка ключа...</div>
             </div>
         </div>
 
@@ -35,26 +39,27 @@
 
             <div id="logsTab" class="tab-content">
                 <h2>📋 Логи команд</h2>
-                <div id="logsList"></div>
+                <div id="logsList"><p style="color:#667799;">⏳ Загрузка...</p></div>
             </div>
 
             <div id="usersTab" class="tab-content" style="display:none">
                 <h2>👥 Список пользователей</h2>
-                <div id="usersList"></div>
+                <div id="usersList"><p style="color:#667799;">⏳ Загрузка...</p></div>
             </div>
 
             <div id="bansTab" class="tab-content" style="display:none">
                 <h2>⛔ Управление банами</h2>
-                <div id="bansList"></div>
+                <div id="bansList"><p style="color:#667799;">⏳ Загрузка...</p></div>
             </div>
 
             <div id="settingsTab" class="tab-content" style="display:none">
                 <h2>⚙️ Настройки бота</h2>
-                <button onclick="toggleTech()" id="techBtn">Включить техработы</button>
-                <p id="techStatus">Техработы: выключены</p>
+                <button onclick="toggleTech()" id="techBtn">🛠️ Включить техработы</button>
+                <p id="techStatus" style="margin-top:12px;">Техработы: выключены</p>
+                <p style="margin-top:12px;color:#667799;font-size:13px;">💡 Управление через бота: <code>.tex on 1h</code> или <code>.tex off</code></p>
             </div>
         </div>
     </div>
-    <script src="script.js"></script>
+    <script src="script.js?v=3.0"></script>
 </body>
 </html>
