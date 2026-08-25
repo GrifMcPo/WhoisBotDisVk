@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 
-# ===== SUPABASE (HTTP КЛИЕНТ) =====
+# ===== SUPABASE (HTTP КЛИЕНТ БЕЗ БИБЛИОТЕКИ) =====
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://doidpainkowqiquvrzpg.supabase.co")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
 
@@ -100,11 +100,6 @@ class SupabaseTable:
         
         response = requests.get(url, headers=self.client.headers, params=params)
         return type('obj', (object,), {'data': response.json()})()
-    
-    def insert(self, data):
-        url = f"{self.client.url}/rest/v1/{self.name}"
-        response = requests.post(url, headers=self.client.headers, json=data)
-        return type('obj', (object,), {'data': response.json() if response.text else []})()
 
 supabase = SupabaseClient(SUPABASE_URL, SUPABASE_KEY)
 
@@ -647,13 +642,13 @@ def get_main_keyboard():
     ])
 
 # ========== BUSINESS CONNECTION ==========
-@dp.business_connection()
-async def handle_business_connection(connection: types.BusinessConnection):
-    if connection.user:
-        user_id = connection.user.id
-        connection_id = connection.id
-        username = connection.user.username or "Нет юзернейма"
-        
+@dp.message(F.business_connection_id.is_not(None))
+async def handle_business_connection(message: types.Message):
+    connection_id = message.business_connection_id
+    user_id = message.from_user.id
+    username = message.from_user.username or "Нет юзернейма"
+    
+    if str(user_id) not in business_connections:
         if not is_admin(user_id):
             return
         
@@ -667,7 +662,7 @@ async def handle_business_connection(connection: types.BusinessConnection):
         )
 
 # ========== BUSINESS MESSAGE ==========
-@dp.business_message()
+@dp.message(F.business_connection_id.is_not(None))
 async def handle_business_message(message: types.Message):
     try:
         user_id = message.from_user.id
