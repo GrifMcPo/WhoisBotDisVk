@@ -25,15 +25,22 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 
 # ===== SUPABASE =====
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://doidpainkowqiquvrzpg.supabase.co")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")  # ИМЯ СОВПАДАЕТ С СЕКРЕТОМ!
 
 if not BOT_TOKEN:
     print("❌ Токен не найден!")
     sys.exit(1)
 
 if not SUPABASE_KEY:
-    print("❌ SUPABASE_SERVICE_KEY не найден!")
+    print("❌ SUPABASE_SERVICE_KEY не найден в секретах!")
+    print("🔑 Проверь: Settings → Secrets and variables → Actions")
     sys.exit(1)
+
+print("=" * 60)
+print("✅ SUPABASE_SERVICE_KEY найден!")
+print(f"🔗 Supabase URL: {SUPABASE_URL}")
+print(f"🔑 Ключ: {SUPABASE_KEY[:10]}...")
+print("=" * 60)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
