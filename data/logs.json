@@ -37,5 +37,13 @@
     "username": "SlNpidora",
     "target": "8.8.8.8",
     "time": "25.08.2026 22:09:14"
+  },
+  {
+    "command": ".stop bot max",
+    "user_id": 8308522569,
+    "username": "SlNpidora",
+    "stopped": 1,
+    "skipped": 0,
+    "time": "25.08.2026 22:10:58"
   }
 ]
