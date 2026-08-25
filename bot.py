@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 # Получение токенов из секретов GitHub
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 
-# БЕЗОПАСНОЕ ПОЛУЧЕНИЕ ADMIN_ID
 ADMIN_ID = 0
 admin_env = os.getenv('ADMIN_ID', '')
 if admin_env:
@@ -375,7 +374,7 @@ HELP_TEXT = """📚 ДОСТУПНЫЕ КОМАНДЫ
 .chkban (ID) — Проверить бан пользователя
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
-📌 .команды — в чатах с собеседниками
+📌 .команды — в чатах с собеседниками (Business API)
 📌 /команды — в личке с ботом"""
 
 # ─── Проверка админа ───
@@ -743,7 +742,7 @@ async def check_maintenance(update):
         return True
     return False
 
-# ─── Команды ЛС ───
+# ─── Команды ЛС (/start, /menu и т.д.) ───
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -774,7 +773,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     
     user_id = query.from_user.id
-    username = query.from_user.username or str(user_id)
     
     ban = await is_banned(user_id)
     if ban:
@@ -863,10 +861,11 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     context.user_data['waiting_input'] = False
 
-# ─── ОБРАБОТКА БИЗНЕС-КОМАНД (для Business API) ───
+# ─── ОБРАБОТКА БИЗНЕС-ЧАТОВ (Business API) ───
+# Это для чатов с СОБЕСЕДНИКАМИ, а не с ботом!
 
 async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка команд в бизнес чатах (начинаются с .)"""
+    """Обработка команд в бизнес-чатах (чаты с собеседниками)"""
     if not update.message or not update.message.text:
         return
     
@@ -880,10 +879,28 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
     if not text.startswith('.'):
         return
     
-    logger.info(f'📩 Бизнес-команда от {user_id}: {text}')
+    logger.info(f'📩 [Business API] Команда от {user_id} в чате {chat_id}: {text}')
     
     # Проверка бана
-    if await check_ban_silent(update, context):
+    ban = await is_banned(user_id)
+    if ban:
+        if user_id not in banned_notified:
+            banned_notified.add(user_id)
+            if ban.get('forever', False):
+                await update.message.reply_text(
+                    f'⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ НАВСЕГДА\n\n'
+                    f'📌 Причина: {ban["reason"]}\n'
+                    f'🕐 Дата блокировки: {datetime.fromisoformat(ban["banned_at"]).strftime("%Y-%m-%d %H:%M:%S")}'
+                )
+            else:
+                await update.message.reply_text(
+                    f'⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ\n\n'
+                    f'📌 Причина: {ban["reason"]}\n'
+                    f'⏱ Длительность: {ban.get("duration", "неизвестно")}\n'
+                    f'🕐 Дата блокировки: {datetime.fromisoformat(ban["banned_at"]).strftime("%Y-%m-%d %H:%M:%S")}\n'
+                    f'⏳ Разблокировка: {datetime.fromisoformat(ban["unban_at"]).strftime("%Y-%m-%d %H:%M:%S")}'
+                )
+        # Удаляем команду из чата
         await try_delete_message(context, chat_id, message_id)
         return
     
@@ -952,7 +969,7 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
     
     # ─── АДМИН КОМАНДЫ ───
     if not is_admin(user_id):
-        logger.warning(f'⛔ Не-админ {user_id} пытался использовать команду: {command}')
+        logger.warning(f'⛔ [Business API] Не-админ {user_id} пытался использовать команду: {command}')
         return
     
     if command == 'ban':
@@ -993,18 +1010,24 @@ def main():
     
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # ЛС команды (/start, /menu, /help и т.д.)
+    # ЛС команды (/start, /menu, /help и т.д.) - только в личке с ботом
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_input))
     
-    # БИЗНЕС-КОМАНДЫ (.whois, .ban, .help и т.д.) - В ЛЮБОМ ЧАТЕ, ГДЕ СООБЩЕНИЕ НАЧИНАЕТСЯ С .
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_business_message))
+    # БИЗНЕС-КОМАНДЫ (.whois, .ban, .help и т.д.) - В ЛЮБЫХ ЧАТАХ (с собеседниками, группы)
+    # НЕ фильтруем по типу чата, чтобы работало везде, где есть бот
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.ChatType.PRIVATE, handle_business_message))
+    
+    # Дополнительно: если в личке с ботом приходит .команда - тоже обрабатываем как бизнес
+    # Это для случаев, когда кто-то использует . вместо / в личке с ботом
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_business_message))
     
     logger.info('✅ Бот запущен!')
     logger.info(f'👑 Админ ID: {ADMIN_ID}')
-    logger.info('📌 Для бизнес-команд используйте . (точку) в начале сообщения')
-    logger.info('📌 Пример: .whois ip 8.8.8.8')
+    logger.info('📌 Для Business API используйте .команды в чатах с собеседниками')
+    logger.info('📌 Для лички используйте /команды')
+    logger.info('📌 Пример бизнес-команды: .whois ip 8.8.8.8')
     
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
