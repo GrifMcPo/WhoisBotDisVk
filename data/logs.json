@@ -1,1 +1,10 @@
-[]
+[
+  {
+    "command": ".stop max max",
+    "user_id": 8308522569,
+    "username": "SlNpidora",
+    "stopped": 1,
+    "skipped": 0,
+    "time": "25.08.2026 20:08:05"
+  }
+]
