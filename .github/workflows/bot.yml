@@ -32,6 +32,7 @@ jobs:
       env:
         BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         ADMIN_ID: ${{ secrets.ADMIN_ID }}
+        SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         GH_TOKEN: ${{ secrets.GH_TOKEN }}
       run: |
         python bot.py &
