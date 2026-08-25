@@ -34,12 +34,12 @@ if not ADMIN_ID:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# ===== ФАЙЛЫ =====
-LOGS_FILE = "data/logs.json"
-BANLIST_FILE = "data/banlist.json"
-IDLIST_FILE = "data/idlist.json"
-KEYS_FILE = "data/keys.json"
-TECH_FILE = "data/tech.json"
+# ===== ФАЙЛЫ (ПИШЕМ В docs/data/) =====
+LOGS_FILE = "docs/data/logs.json"
+BANLIST_FILE = "docs/data/banlist.json"
+IDLIST_FILE = "docs/data/idlist.json"
+KEYS_FILE = "docs/data/keys.json"
+TECH_FILE = "docs/data/tech.json"
 
 # ===== GITHUB API =====
 REPO = "GrifMcPo/WhoisBotDisVk"
@@ -1222,9 +1222,10 @@ async def main():
     print(f"🔑 GH_TOKEN: {'✅' if GH_TOKEN else '❌'}")
     print("📌 Команды с / — в личке бота")
     print("📌 Команды с . — в чатах с собеседниками")
+    print("📁 Файлы пишутся в docs/data/ для сайта")
     print("=" * 60)
     
-    os.makedirs('data', exist_ok=True)
+    os.makedirs('docs/data', exist_ok=True)
     
     # Создаём файлы если их нет
     for file in [LOGS_FILE, BANLIST_FILE, IDLIST_FILE, KEYS_FILE, TECH_FILE]:
