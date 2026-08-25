@@ -48,6 +48,9 @@ BRANCH = "main"
 business_connections = {}
 blocked_notified = {}
 
+# ===== ФЛАГ ДЛЯ ПРЕДОТВРАЩЕНИЯ СПАМА =====
+processing_commands = {}
+
 def get_msk_time():
     return (datetime.utcnow() + timedelta(hours=3)).strftime('%d.%m.%Y %H:%M:%S')
 
@@ -590,9 +593,9 @@ async def handle_business_message(message: types.Message):
         message_id = message.message_id
         connection_id = message.business_connection_id
         
+        # Только админ может использовать бизнес-бота
         if not is_admin(user_id):
-            await delete_business_message(chat_id, message_id, connection_id)
-            return
+            return  # НЕ УДАЛЯЕМ СООБЩЕНИЯ ОТ ДРУГИХ!
         
         if not connection_id:
             connection_id = business_connections.get(str(user_id))
@@ -601,20 +604,16 @@ async def handle_business_message(message: types.Message):
             if str(user_id) not in blocked_notified:
                 ban_info = get_ban_info(user_id)
                 reason = ban_info.get("reason", "Не указана") if ban_info else "Не указана"
-                await delete_business_message(chat_id, message_id, connection_id)
                 await send_to_business_chat(
                     chat_id,
                     f"⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ!\n\n📌 Причина: {reason}",
                     connection_id
                 )
                 blocked_notified[str(user_id)] = True
-            else:
-                await delete_business_message(chat_id, message_id, connection_id)
             return
         
         if is_tech_mode():
             tech_info = get_tech_info()
-            await delete_business_message(chat_id, message_id, connection_id)
             await send_to_business_chat(
                 chat_id,
                 f"🛠️ БОТ НА ТЕХНИЧЕСКИХ РАБОТАХ\n\n🕐 ВРЕМЯ: {tech_info.get('expires_at', 'Неизвестно')}",
@@ -626,6 +625,12 @@ async def handle_business_message(message: types.Message):
             return
         
         text = message.text.strip()
+        
+        # ===== УДАЛЯЕМ ТОЛЬКО КОМАНДЫ, НЕ ТЕКСТ! =====
+        if not text.startswith('.'):
+            return  # Не удаляем обычный текст
+        
+        # Удаляем только команду
         await delete_business_message(chat_id, message_id, connection_id)
         
         # .help
@@ -778,7 +783,7 @@ HELP_TEXT = """📚 СПИСОК КОМАНД
 /logs (ID) — Логи (админ)
 /ban — Бан (админ)
 /unban — Разбан (админ)
-/key — Ключ для сайта (админ)
+/key — Ключ (админ)
 /stop — Остановить раннеры (админ)
 
 🔹 В ЧАТАХ (с .):
@@ -803,23 +808,30 @@ HELP_TEXT = """📚 СПИСОК КОМАНД
 @dp.message(Command("start"))
 async def start(message: types.Message):
     user_id = message.from_user.id
-    logger.info(f"📩 /start от {user_id}")
     
-    if is_banned(user_id):
-        if str(user_id) not in blocked_notified:
-            ban_info = get_ban_info(user_id)
-            reason = ban_info.get("reason", "Не указана") if ban_info else "Не указана"
-            await message.answer(f"⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ!\n\n📌 Причина: {reason}")
-            blocked_notified[str(user_id)] = True
+    # Защита от спама
+    if user_id in processing_commands and processing_commands[user_id] == "start":
         return
+    processing_commands[user_id] = "start"
     
-    if is_tech_mode() and not is_admin(user_id):
-        tech_info = get_tech_info()
-        await message.answer(f"🛠️ БОТ НА ТЕХНИЧЕСКИХ РАБОТАХ\n\n🕐 ВРЕМЯ: {tech_info.get('expires_at', 'Неизвестно')}")
-        return
-    
-    save_log({"command": "/start", "user_id": user_id, "username": message.from_user.username or "Нет", "time": get_msk_time()})
-    await message.answer("🔥 ДОБРО ПОЖАЛОВАТЬ!\n\nВыберите действие:", reply_markup=get_main_keyboard())
+    try:
+        if is_banned(user_id):
+            if str(user_id) not in blocked_notified:
+                ban_info = get_ban_info(user_id)
+                reason = ban_info.get("reason", "Не указана") if ban_info else "Не указана"
+                await message.answer(f"⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ!\n\n📌 Причина: {reason}")
+                blocked_notified[str(user_id)] = True
+            return
+        
+        if is_tech_mode() and not is_admin(user_id):
+            tech_info = get_tech_info()
+            await message.answer(f"🛠️ БОТ НА ТЕХНИЧЕСКИХ РАБОТАХ\n\n🕐 ВРЕМЯ: {tech_info.get('expires_at', 'Неизвестно')}")
+            return
+        
+        save_log({"command": "/start", "user_id": user_id, "username": message.from_user.username or "Нет", "time": get_msk_time()})
+        await message.answer("🔥 ДОБРО ПОЖАЛОВАТЬ!\n\nВыберите действие:", reply_markup=get_main_keyboard())
+    finally:
+        del processing_commands[user_id]
 
 @dp.message(Command("help"))
 async def help_command(message: types.Message):
