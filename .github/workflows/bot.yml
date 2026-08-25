@@ -28,11 +28,6 @@ jobs:
       run: |
         pip install -r requirements.txt
     
-    - name: Configure Git
-      run: |
-        git config --global user.name "github-actions[bot]"
-        git config --global user.email "github-actions[bot]@users.noreply.github.com"
-    
     - name: Run bot
       env:
         BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
