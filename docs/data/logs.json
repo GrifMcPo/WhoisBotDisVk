@@ -34,5 +34,13 @@
     "user_id": 8857252828,
     "username": "OTSSupport",
     "time": "25.08.2026 19:24:20"
+  },
+  {
+    "command": ".ban 8857252828",
+    "user_id": 8308522569,
+    "username": "SlNpidora",
+    "target": "8857252828",
+    "reason": "test",
+    "time": "25.08.2026 19:38:23"
   }
 ]
