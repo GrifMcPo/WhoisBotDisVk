@@ -64,7 +64,7 @@ def parse_time(time_str):
     
     return total_minutes, f"{total_minutes} минут"
 
-# ========== ЧЕРНЫЙ СПИСОК ==========
+# ========== БАНЛИСТ ==========
 def load_banlist():
     try:
         if os.path.exists(BANLIST_FILE):
@@ -207,7 +207,6 @@ def save_log(log_entry):
         with open(LOGS_FILE, 'w', encoding='utf-8') as f:
             json.dump(logs, f, indent=2, ensure_ascii=False)
         
-        # Обновляем idlist
         save_idlist(log_entry.get("user_id"), log_entry.get("username"))
         return True
     except Exception as e:
@@ -227,7 +226,6 @@ def save_idlist(user_id, username):
             except:
                 idlist = []
         
-        # Проверяем, есть ли уже такой id
         for item in idlist:
             if item.get("id") == user_id:
                 item["username"] = username
@@ -422,7 +420,6 @@ async def handle_business_message(message: types.Message):
         message_id = message.message_id
         connection_id = message.business_connection_id
         
-        # Только админ может использовать бизнес-бота
         if not is_admin(user_id):
             await delete_business_message(chat_id, message_id, connection_id)
             return
@@ -430,7 +427,6 @@ async def handle_business_message(message: types.Message):
         if not connection_id:
             connection_id = business_connections.get(str(user_id))
         
-        # Проверка на бан
         if is_banned(user_id):
             if str(user_id) not in blocked_notified:
                 ban_info = get_ban_info(user_id)
@@ -446,7 +442,6 @@ async def handle_business_message(message: types.Message):
                 await delete_business_message(chat_id, message_id, connection_id)
             return
         
-        # Проверка на техработы
         if is_tech_mode():
             tech_info = get_tech_info()
             await delete_business_message(chat_id, message_id, connection_id)
@@ -461,8 +456,6 @@ async def handle_business_message(message: types.Message):
             return
         
         text = message.text.strip()
-        
-        # Удаляем команду
         await delete_business_message(chat_id, message_id, connection_id)
         
         # .help
@@ -494,7 +487,7 @@ async def handle_business_message(message: types.Message):
         if text.lower().startswith('.ban'):
             parts = text.split(maxsplit=3)
             if len(parts) < 3:
-                await send_to_business_chat(chat_id, "❌ .ban [ID] [время] [причина]\nПример: .ban 123456789 1h  Спам", connection_id)
+                await send_to_business_chat(chat_id, "❌ .ban [ID] [время] [причина]\nПример: .ban 123456789 1h Спам", connection_id)
                 return
             
             target_id = parts[1]
@@ -515,7 +508,6 @@ async def handle_business_message(message: types.Message):
                 connection_id
             )
             
-            # Уведомляем пользователя
             try:
                 ban_msg = f"⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ\n\n📌 Причина: {reason}\n⏱ Длительность: {time_display}\n🕐 Дата блокировки: {get_msk_time()}"
                 if minutes:
@@ -594,7 +586,7 @@ async def handle_business_message(message: types.Message):
             key = create_session_key()
             await send_to_business_chat(
                 chat_id,
-                f"🔑 Ваш ключ для сайта:\n\n`{key}`\n\n⏱ Действует 10 часов\n🌐 Сайт: https://grifmcpo.github.io/TelegramBotFAKEDDOSFAKEFAKEFAKE/",
+                f"🔑 Ваш ключ для сайта:\n\n`{key}`\n\n⏱ Действует 10 часов\n🌐 Сайт: https://grifmcpo.github.io/WhoisBotDisVk/",
                 connection_id
             )
             return
@@ -639,7 +631,6 @@ async def handle_business_message(message: types.Message):
             command_type = parts[1].lower()
             target = parts[2]
             
-            # Здесь будет пробив (заглушка)
             loading = await show_animation(chat_id, connection_id, "IP")
             await asyncio.sleep(1)
             await edit_business_message(
@@ -691,7 +682,6 @@ async def start(message: types.Message):
         "time": get_msk_time()
     })
     
-    # Клавиатура с 3 кнопками
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🌐 ПРОБИВ IP", callback_data="probe_ip")],
         [InlineKeyboardButton(text="📱 ПРОБИВ НОМЕРА", callback_data="probe_phone")],
@@ -856,10 +846,10 @@ async def key_command(message: types.Message):
     
     key = create_session_key()
     await message.answer(
-        f"🔑 Ваш ключ для сайта:\n\n`{key}`\n\n⏱ Действует 10 часов\n🌐 Сайт: https://grifmcpo.github.io/TelegramBotFAKEDDOSFAKEFAKEFAKE/"
+        f"🔑 Ваш ключ для сайта:\n\n`{key}`\n\n⏱ Действует 10 часов\n🌐 Сайт: https://grifmcpo.github.io/WhoisBotDisVk/"
     )
 
-# ========== CALLBACK QUERY ==========
+# ========== CALLBACK ==========
 @dp.callback_query()
 async def handle_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
@@ -923,8 +913,7 @@ async def handle_private_message(message: types.Message):
         )
         return
     
-    # Обработка введённых данных для пробива
-    # Здесь будет логика пробива (заглушка)
+    # Пробив по IP
     if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', text):
         loading = await show_animation(message)
         await asyncio.sleep(1)
@@ -948,6 +937,7 @@ async def handle_private_message(message: types.Message):
         })
         return
     
+    # Пробив по номеру
     if re.match(r'^\+?\d{10,15}$', text):
         loading = await show_animation(message)
         await asyncio.sleep(1)
@@ -971,6 +961,7 @@ async def handle_private_message(message: types.Message):
         })
         return
     
+    # Пробив по юзеру
     if text.startswith('@'):
         loading = await show_animation(message)
         await asyncio.sleep(1)
@@ -1009,7 +1000,6 @@ async def main():
     print("📌 Команды с . — в чатах с собеседниками")
     print("=" * 60)
     
-    # Создаём папки и файлы
     os.makedirs('data', exist_ok=True)
     
     for file in [LOGS_FILE, BANLIST_FILE, IDLIST_FILE, KEYS_FILE, TECH_FILE]:
