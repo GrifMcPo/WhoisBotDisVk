@@ -11,7 +11,7 @@ from phonenumbers import carrier, geocoder, timezone, number_type
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BusinessConnection
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram import F
 from supabase import create_client, Client
 import aiohttp
@@ -576,7 +576,7 @@ def get_main_keyboard():
 
 # ========== BUSINESS CONNECTION ==========
 @dp.business_connection()
-async def handle_business_connection(connection: BusinessConnection):
+async def handle_business_connection(connection: types.BusinessConnection):
     if connection.user:
         user_id = connection.user.id
         connection_id = connection.id
