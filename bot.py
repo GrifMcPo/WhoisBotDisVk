@@ -49,7 +49,6 @@ maintenance_mode = False
 maintenance_until = None
 banned_notified = set()
 user_states = {}
-account_connected = False  # Флаг подключения аккаунта
 
 # ─── Работа с файлами ───
 
@@ -389,38 +388,6 @@ async def delete_message(target, message_id):
     except Exception as e:
         logger.error(f'❌ Не удалось удалить: {e}')
 
-# ─── ОБРАБОТЧИК ПОДКЛЮЧЕНИЯ АККАУНТА ───
-
-@dp.chat_member()
-async def handle_chat_member(chat_member_update: types.ChatMemberUpdated):
-    """
-    Обработчик подключения бота к аккаунту
-    Срабатывает когда бота добавляют в чат или подключают к аккаунту
-    """
-    user_id = chat_member_update.from_user.id
-    chat_id = chat_member_update.chat.id
-    new_status = chat_member_update.new_chat_member.status
-    
-    logger.info(f'🔗 [CHAT_MEMBER] Пользователь {user_id}, чат {chat_id}, статус: {new_status}')
-    
-    # Если бота добавили в чат или подключили к аккаунту
-    if new_status in ['member', 'administrator', 'creator']:
-        # Отправляем уведомление админу
-        if ADMIN_ID:
-            try:
-                await bot.send_message(
-                    ADMIN_ID,
-                    f'✅ АККАУНТ ПОДКЛЮЧЕН!\n\n'
-                    f'📌 Бот успешно подключен к аккаунту\n'
-                    f'🕐 Время: {moscow_time()}\n'
-                    f'📊 Chat ID: {chat_id}\n'
-                    f'👤 User ID: {user_id}\n\n'
-                    f'Теперь бот будет видеть сообщения в чатах с собеседниками!'
-                )
-                logger.info(f'📤 Уведомление отправлено админу {ADMIN_ID}')
-            except Exception as e:
-                logger.error(f'❌ Ошибка отправки уведомления: {e}')
-
 # ─── ОБРАБОТЧИК BUSINESS CONNECTION ───
 
 @dp.business_connection()
@@ -429,13 +396,11 @@ async def handle_business_connection(connection: types.BusinessConnection):
     Обработчик подключения Business API
     Срабатывает когда бот подключается к бизнес-аккаунту
     """
-    user_id = connection.user_id
-    chat_id = connection.user_id  # В бизнес-подключении user_id = chat_id
+    # В Aiogram 3.5.0 у BusinessConnection нет user_id напрямую
+    # Используем connection.id или connection.user_id если есть
+    connection_id = connection.id
     
-    logger.info(f'🔗 [BUSINESS_CONNECTION] Подключение от {user_id}')
-    
-    global account_connected
-    account_connected = True
+    logger.info(f'🔗 [BUSINESS_CONNECTION] Подключение: {connection_id}')
     
     # Отправляем уведомление админу
     if ADMIN_ID:
@@ -445,8 +410,7 @@ async def handle_business_connection(connection: types.BusinessConnection):
                 f'✅ BUSINESS API ПОДКЛЮЧЕН!\n\n'
                 f'📌 Бот подключен к Business API\n'
                 f'🕐 Время: {moscow_time()}\n'
-                f'👤 User ID: {user_id}\n'
-                f'🔗 Connection ID: {connection.id}\n\n'
+                f'🔗 Connection ID: {connection_id}\n\n'
                 f'Теперь бот видит сообщения в чатах с собеседниками!\n'
                 f'Проверь: отправь .help в чат с собеседником.'
             )
