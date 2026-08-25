@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Panel</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="login-box" id="loginBox">
+            <h1>🔐 Вход в панель</h1>
+            <p class="subtitle">Введите ключ доступа</p>
+            <div class="input-group">
+                <input type="text" id="keyInput" placeholder="ADMIN_XXXXX" maxlength="10">
+                <button id="keySubmitBtn">Проверить</button>
+            </div>
+            <div id="keyStatus" class="status-message"></div>
+        </div>
+
+        <div class="admin-panel" id="adminPanel" style="display: none;">
+            <h1>🛠️ Админ панель</h1>
+            <div class="stats-grid">
+                <div class="stat-card" onclick="showLogs()">
+                    <div class="stat-icon">📊</div>
+                    <h3>Логи</h3>
+                    <p>Просмотр всех логов</p>
+                    <button>Открыть</button>
+                </div>
+                <div class="stat-card" onclick="showUsers()">
+                    <div class="stat-icon">👥</div>
+                    <h3>ID список</h3>
+                    <p>Все пользователи</p>
+                    <button>Открыть</button>
+                </div>
+                <div class="stat-card" onclick="showBans()">
+                    <div class="stat-icon">⛔</div>
+                    <h3>Баны</h3>
+                    <p>Управление банами</p>
+                    <button>Открыть</button>
+                </div>
+                <div class="stat-card" onclick="showSettings()">
+                    <div class="stat-icon">⚙️</div>
+                    <h3>Настройки</h3>
+                    <p>Технические работы</p>
+                    <button>Открыть</button>
+                </div>
+            </div>
+            <div id="contentArea" class="content-area">
+                <p class="hint">👈 Выберите раздел для просмотра</p>
+            </div>
+        </div>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>
