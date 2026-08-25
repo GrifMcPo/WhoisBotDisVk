@@ -1,8 +1,47 @@
+// ===== ВЕРСИЯ 3.0 =====
+console.log('🚀 Whois Admin v3.0');
+
 // ===== КОНФИГ =====
+const GITHUB_API = 'https://api.github.com/repos/GrifMcPo/WhoisBotDisVk/contents/data';
 const GITHUB_RAW = 'https://raw.githubusercontent.com/GrifMcPo/WhoisBotDisVk/main/data';
 
 // ===== ПЕРЕМЕННЫЕ =====
 let sessionActive = false;
+let updateInterval = null;
+
+// ===== ФУНКЦИЯ ЧТЕНИЯ ФАЙЛА =====
+async function readFile(fileName) {
+    try {
+        const url = `${GITHUB_RAW}/${fileName}?_=${Date.now()}`;
+        const res = await fetch(url, {
+            cache: 'no-cache',
+            headers: {
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'Pragma': 'no-cache'
+            }
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return await res.json();
+    } catch (e) {
+        console.error(`Ошибка чтения ${fileName}:`, e);
+        return null;
+    }
+}
+
+// ===== ФУНКЦИЯ ЧТЕНИЯ КЛЮЧЕЙ ЧЕРЕЗ API (ДЛЯ ВХОДА) =====
+async function readKeysFromApi() {
+    const url = `${GITHUB_API}/keys.json`;
+    const res = await fetch(url, {
+        headers: {
+            'Accept': 'application/vnd.github.v3+json',
+            'Cache-Control': 'no-cache, no-store, must-revalidate'
+        }
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const content = atob(data.content);
+    return JSON.parse(content);
+}
 
 // ===== ВХОД =====
 async function login() {
@@ -19,17 +58,7 @@ async function login() {
     loadingEl.style.display = 'block';
     
     try {
-        const url = `https://raw.githubusercontent.com/GrifMcPo/WhoisBotDisVk/main/data/keys.json?_=${Date.now()}`;
-        const res = await fetch(url, {
-            cache: 'no-cache',
-            headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' }
-        });
-        
-        if (!res.ok) {
-            throw new Error('Файл keys.json не найден. Подождите, пока бот создаст ключ.');
-        }
-        
-        const keys = await res.json();
+        const keys = await readKeysFromApi();
         
         if (keys[key]) {
             const expires = new Date(keys[key].expires_at);
@@ -39,10 +68,26 @@ async function login() {
                 sessionActive = true;
                 document.getElementById('loginPage').style.display = 'none';
                 document.getElementById('adminPage').style.display = 'block';
-                loadLogs();
-                loadUsers();
-                loadBans();
-                loadTechStatus();
+                
+                // Первая загрузка
+                await Promise.all([
+                    loadLogs(),
+                    loadUsers(),
+                    loadBans(),
+                    loadTechStatus()
+                ]);
+                
+                // Запускаем обновление каждые 10 секунд
+                if (updateInterval) clearInterval(updateInterval);
+                updateInterval = setInterval(() => {
+                    if (sessionActive) {
+                        loadLogs();
+                        loadUsers();
+                        loadBans();
+                        loadTechStatus();
+                    }
+                }, 10000);
+                
                 errorEl.textContent = '';
                 loadingEl.style.display = 'none';
                 return;
@@ -53,7 +98,7 @@ async function login() {
             errorEl.textContent = '❌ Неверный ключ';
         }
     } catch (e) {
-        errorEl.textContent = '❌ ' + e.message;
+        errorEl.textContent = '❌ Ошибка проверки ключа. Убедитесь, что бот создал ключ.';
         console.error('Login error:', e);
     }
     
@@ -62,6 +107,10 @@ async function login() {
 
 function logout() {
     sessionActive = false;
+    if (updateInterval) {
+        clearInterval(updateInterval);
+        updateInterval = null;
+    }
     document.getElementById('adminPage').style.display = 'none';
     document.getElementById('loginPage').style.display = 'block';
     document.getElementById('keyInput').value = '';
@@ -78,123 +127,70 @@ function showTab(tab) {
 
 // ===== ЗАГРУЗКА ЛОГОВ =====
 async function loadLogs() {
-    try {
-        const res = await fetch(`${GITHUB_RAW}/logs.json?_=${Date.now()}`, {
-            cache: 'no-cache',
-            headers: { 'Cache-Control': 'no-cache' }
-        });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const data = await res.json();
-        const container = document.getElementById('logsList');
-        if (!container) return;
-        if (!data || data.length === 0) {
-            container.innerHTML = '<p style="color:#667799;">📭 Логов пока нет</p>';
-            return;
-        }
-        container.innerHTML = data.slice().reverse().slice(0, 50).map(log => `
-            <div class="log-item">
-                <span><span class="time">[${log.time || '—'}]</span> <span class="cmd">${log.command || '—'}</span></span>
-                <span class="user">${log.username || log.user_id || '—'}</span>
-            </div>
-        `).join('');
-    } catch (e) {
-        console.error('Logs error:', e);
-        const container = document.getElementById('logsList');
-        if (container) container.innerHTML = '<p style="color:#ff4455;">❌ Ошибка загрузки логов</p>';
+    const data = await readFile('logs.json');
+    const container = document.getElementById('logsList');
+    if (!container) return;
+    if (!data || data.length === 0) {
+        container.innerHTML = '<p style="color:#667799;">📭 Логов пока нет</p>';
+        return;
     }
+    container.innerHTML = data.slice().reverse().slice(0, 50).map(log => `
+        <div class="log-item">
+            <span><span class="time">[${log.time || '—'}]</span> <span class="cmd">${log.command || '—'}</span></span>
+            <span class="user">${log.username || log.user_id || '—'}</span>
+        </div>
+    `).join('');
 }
 
 // ===== ЗАГРУЗКА ПОЛЬЗОВАТЕЛЕЙ =====
 async function loadUsers() {
-    try {
-        const res = await fetch(`${GITHUB_RAW}/idlist.json?_=${Date.now()}`, {
-            cache: 'no-cache',
-            headers: { 'Cache-Control': 'no-cache' }
-        });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const data = await res.json();
-        const container = document.getElementById('usersList');
-        if (!container) return;
-        if (!data || data.length === 0) {
-            container.innerHTML = '<p style="color:#667799;">📭 Пользователей пока нет</p>';
-            return;
-        }
-        container.innerHTML = data.map(user => `
-            <div class="user-item">
-                <span>🆔 ${user.id || '?'}</span>
-                <span>👤 ${user.username ? '@' + user.username : 'Нет'}</span>
-            </div>
-        `).join('');
-    } catch (e) {
-        console.error('Users error:', e);
-        const container = document.getElementById('usersList');
-        if (container) container.innerHTML = '<p style="color:#ff4455;">❌ Ошибка загрузки пользователей</p>';
+    const data = await readFile('idlist.json');
+    const container = document.getElementById('usersList');
+    if (!container) return;
+    if (!data || data.length === 0) {
+        container.innerHTML = '<p style="color:#667799;">📭 Пользователей пока нет</p>';
+        return;
     }
+    container.innerHTML = data.map(user => `
+        <div class="user-item">
+            <span>🆔 ${user.id || '?'}</span>
+            <span>👤 ${user.username ? '@' + user.username : 'Нет'}</span>
+        </div>
+    `).join('');
 }
 
 // ===== ЗАГРУЗКА БАНОВ =====
 async function loadBans() {
-    try {
-        const res = await fetch(`${GITHUB_RAW}/banlist.json?_=${Date.now()}`, {
-            cache: 'no-cache',
-            headers: { 'Cache-Control': 'no-cache' }
-        });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const data = await res.json();
-        const container = document.getElementById('bansList');
-        if (!container) return;
-        const entries = Object.entries(data || {});
-        if (entries.length === 0) {
-            container.innerHTML = '<p style="color:#667799;">📭 Банов нет</p>';
-            return;
-        }
-        container.innerHTML = entries.map(([id, info]) => `
-            <div class="ban-item">
-                <span>🆔 ${id}</span>
-                <span>📌 ${info.reason || '—'}</span>
-                <span>🕐 ${info.added_at || '—'}</span>
-            </div>
-        `).join('');
-    } catch (e) {
-        console.error('Bans error:', e);
-        const container = document.getElementById('bansList');
-        if (container) container.innerHTML = '<p style="color:#ff4455;">❌ Ошибка загрузки банов</p>';
+    const data = await readFile('banlist.json');
+    const container = document.getElementById('bansList');
+    if (!container) return;
+    const entries = Object.entries(data || {});
+    if (entries.length === 0) {
+        container.innerHTML = '<p style="color:#667799;">📭 Банов нет</p>';
+        return;
     }
+    container.innerHTML = entries.map(([id, info]) => `
+        <div class="ban-item">
+            <span>🆔 ${id}</span>
+            <span>📌 ${info.reason || '—'}</span>
+            <span>🕐 ${info.added_at || '—'}</span>
+        </div>
+    `).join('');
 }
 
 // ===== ТЕХРАБОТЫ =====
 async function loadTechStatus() {
-    try {
-        const res = await fetch(`${GITHUB_RAW}/tech.json?_=${Date.now()}`, {
-            cache: 'no-cache',
-            headers: { 'Cache-Control': 'no-cache' }
-        });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const data = await res.json();
-        const status = data.active ? 'включены' : 'выключены';
-        const btn = document.getElementById('techBtn');
-        const statusEl = document.getElementById('techStatus');
-        if (btn) btn.textContent = data.active ? '❌ Выключить техработы' : '🛠️ Включить техработы';
-        if (statusEl) statusEl.textContent = `Техработы: ${status}`;
-    } catch (e) {
-        console.error('Tech error:', e);
-        const statusEl = document.getElementById('techStatus');
-        if (statusEl) statusEl.textContent = 'Техработы: неизвестно';
-    }
+    const data = await readFile('tech.json');
+    const status = data && data.active ? 'включены' : 'выключены';
+    const btn = document.getElementById('techBtn');
+    const statusEl = document.getElementById('techStatus');
+    if (btn) btn.textContent = data && data.active ? '❌ Выключить техработы' : '🛠️ Включить техработы';
+    if (statusEl) statusEl.textContent = `Техработы: ${status}`;
 }
 
 async function toggleTech() {
     alert('Для управления техработами используй бот-команды:\n.tex on [время]\n.tex off');
 }
-
-// ===== АВТО-ОБНОВЛЕНИЕ =====
-setInterval(() => {
-    if (sessionActive) {
-        loadLogs();
-        loadUsers();
-        loadBans();
-    }
-}, 30000);
 
 // ===== ENTER =====
 document.addEventListener('DOMContentLoaded', function() {
@@ -206,5 +202,6 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
-console.log('🚀 Whois Admin loaded');
+console.log('🚀 Whois Admin v3.0 loaded');
 console.log('📁 GITHUB_RAW:', GITHUB_RAW);
+console.log('🔄 Обновление данных каждые 10 секунд');
