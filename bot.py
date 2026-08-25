@@ -11,7 +11,7 @@ from phonenumbers import carrier, geocoder, timezone, number_type
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BusinessConnection
 from aiogram import F
 import aiohttp
 
@@ -32,16 +32,14 @@ if not BOT_TOKEN:
 
 if not SUPABASE_KEY:
     print("❌ SUPABASE_SERVICE_KEY не найден в секретах!")
-    print("🔑 Проверь: Settings → Secrets and variables → Actions")
     sys.exit(1)
 
 print("=" * 60)
 print("✅ SUPABASE_SERVICE_KEY найден!")
 print(f"🔗 Supabase URL: {SUPABASE_URL}")
-print(f"🔑 Ключ: {SUPABASE_KEY[:10]}...")
 print("=" * 60)
 
-# ===== HTTP КЛИЕНТ ДЛЯ SUPABASE (БЕЗ БИБЛИОТЕКИ) =====
+# ===== HTTP КЛИЕНТ ДЛЯ SUPABASE =====
 class SupabaseClient:
     def __init__(self, url, key):
         self.url = url.rstrip('/')
@@ -65,7 +63,6 @@ class SupabaseTable:
         self._eq_filters = {}
         self._order = None
         self._limit = None
-        self._delete_mode = False
     
     def select(self, columns):
         self._select = columns
@@ -649,8 +646,28 @@ def get_main_keyboard():
         [InlineKeyboardButton(text="👤 ПРОБИВ ЮЗЕРА", callback_data="probe_user")],
     ])
 
+# ========== BUSINESS CONNECTION ==========
+@dp.business_connection()
+async def handle_business_connection(connection: BusinessConnection):
+    if connection.user:
+        user_id = connection.user.id
+        connection_id = connection.id
+        username = connection.user.username or "Нет юзернейма"
+        
+        if not is_admin(user_id):
+            return
+        
+        business_connections[str(user_id)] = connection_id
+        
+        logger.info(f"🔗 BUSINESS CONNECTION: @{username} (ID: {user_id})")
+        
+        await bot.send_message(
+            chat_id=user_id,
+            text=f"✅ БОТ ПОДКЛЮЧЕН К БИЗНЕС-АККАУНТУ!\n\n🆔 ID: {user_id}\n📌 Команды работают в чатах с собеседниками!\n🔥 Введите .help для списка команд"
+        )
+
 # ========== BUSINESS MESSAGE ==========
-@dp.message(F.business_connection_id.is_not(None))
+@dp.business_message()
 async def handle_business_message(message: types.Message):
     try:
         user_id = message.from_user.id
