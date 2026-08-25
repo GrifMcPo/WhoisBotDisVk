@@ -868,4 +868,466 @@ async def handle_business_message(message: types.Message):
         # .key
         if text.lower() == '.key':
             key = create_session_key()
-            await send_to_business_ch
+            await send_to_business_chat(chat_id, f"🔑 Ваш ключ:\n\n`{key}`\n\n⏱ Действует 10 часов", connection_id)
+            return
+        
+        # .tex on
+        if text.lower().startswith('.tex on'):
+            parts = text.split(maxsplit=2)
+            if len(parts) < 3:
+                await send_to_business_chat(chat_id, "❌ .tex on [время]", connection_id)
+                return
+            minutes, _ = parse_time(parts[2])
+            expires_at = (datetime.now() + timedelta(minutes=minutes)).isoformat()
+            set_tech_mode(True, expires_at)
+            await send_to_business_chat(chat_id, f"✅ ТЕХ-РАБОТЫ ВКЛЮЧЕНЫ\n🕐 Окончание: {(datetime.now() + timedelta(minutes=minutes)).strftime('%d.%m.%Y %H:%M')}", connection_id)
+            return
+        
+        if text.lower() == '.tex off':
+            set_tech_mode(False, None)
+            await send_to_business_chat(chat_id, "✅ ТЕХ-РАБОТЫ ВЫКЛЮЧЕНЫ", connection_id)
+            return
+        
+        # .whois
+        if text.lower().startswith('.whois'):
+            parts = text.split(maxsplit=2)
+            if len(parts) < 3:
+                await send_to_business_chat(chat_id, "❌ .whois ip [IP] или .whois n [номер] или .whois qz [@username]", connection_id)
+                return
+            
+            command_type = parts[1].lower()
+            target = parts[2]
+            
+            loading = await show_animation(chat_id, connection_id)
+            
+            if command_type == "ip":
+                try:
+                    ipaddress.ip_address(target)
+                except:
+                    await edit_business_message(chat_id, loading.message_id, f"❌ Некорректный IP: {target}", connection_id)
+                    return
+                
+                results, success_count = await probe_ip(target)
+                final = analyze_ip_results(results)
+                
+                result_text = f"✅ РЕЗУЛЬТАТ ПРОБИВА IP\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🌐 IP-адрес: {target}\n🌍 Страна: {final['country']}\n🏙️ Регион: {final['region']}\n🏙️ Город: {final['city']}\n📡 Провайдер: {final['isp']}\n🏢 Организация: {final['org']}\n🔗 AS: {final['as']}\n⏰ Часовой пояс: {final['timezone']}\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n📊 Обработано: {success_count}/5 серверов"
+                await edit_business_message(chat_id, loading.message_id, result_text, connection_id)
+                await save_log_async({"command": f".whois ip {target}", "user_id": user_id, "username": message.from_user.username or "Нет", "target": target, "time": get_msk_time()})
+                
+            elif command_type == "n":
+                results, success_count, local_data = await probe_phone(target)
+                if local_data and "error" in local_data:
+                    await edit_business_message(chat_id, loading.message_id, f"❌ {local_data['error']}", connection_id)
+                    return
+                final = analyze_phone_results(results, local_data)
+                result_text = f"✅ РЕЗУЛЬТАТ ПРОБИВА НОМЕРА\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n📱 Номер: {final['formatted']}\n📡 Оператор: {final['operator']}\n🌍 Регион: {final['region']}\n⏰ Часовой пояс: {final['timezone']}\n📊 Тип: {final['type']}\n🌐 Код страны: {final['country_code']}\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n📊 Обработано: {success_count} серверов"
+                await edit_business_message(chat_id, loading.message_id, result_text, connection_id)
+                await save_log_async({"command": f".whois n {target}", "user_id": user_id, "username": message.from_user.username or "Нет", "target": target, "time": get_msk_time()})
+                
+            elif command_type == "qz":
+                data = await probe_username(target)
+                result_text = f"✅ РЕЗУЛЬТАТ ПРОБИВА USERNAME\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n👤 Username: {data['username']}\n🆔 ID: {data['id']}\n📛 Имя: {data['name']}\n📊 Статус: {data['status']}\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                await edit_business_message(chat_id, loading.message_id, result_text, connection_id)
+                await save_log_async({"command": f".whois qz {target}", "user_id": user_id, "username": message.from_user.username or "Нет", "target": target, "time": get_msk_time()})
+                
+            else:
+                await edit_business_message(chat_id, loading.message_id, "❌ .whois ip [IP] или .whois n [номер] или .whois qz [@username]", connection_id)
+            return
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка бизнес-сообщения: {e}")
+
+# ========== ТЕКСТ ПОМОЩИ ==========
+HELP_TEXT = """📚 СПИСОК КОМАНД
+
+🔹 В ЛИЧКЕ (с /):
+/start — Главное меню
+/help — Справка
+/whois — Пробив
+/idlist — Пользователи (админ)
+/logs (ID) — Логи (админ)
+/ban — Бан (админ)
+/unban — Разбан (админ)
+/key — Ключ (админ)
+/stop — Остановить раннеры (админ)
+
+🔹 В ЧАТАХ (с .):
+.help — Справка
+.idlist — Пользователи
+.logs (ID) — Логи
+.whois ip [IP] — Пробив IP
+.whois n [номер] — Пробив номера
+.whois qz [@username] — Пробив юзера
+.ban [ID] [время] [причина] — Бан
+.unban [ID] [причина] — Разбан
+.key — Ключ
+.tex on/off — Техработы
+.stop run max — Остановить все раннеры (кроме бота)
+.stop bot max — Остановить все раннеры бота
+.stop max max — Остановить ВСЕ раннеры
+
+📌 .команды — в чатах с собеседниками
+📌 /команды — в личке с ботом"""
+
+# ========== КОМАНДЫ В ЛИЧКЕ ==========
+@dp.message(Command("start"))
+async def start(message: types.Message):
+    user_id = message.from_user.id
+    
+    if user_id in processing_commands and processing_commands[user_id] == "start":
+        return
+    processing_commands[user_id] = "start"
+    
+    try:
+        if is_banned(user_id):
+            if str(user_id) not in blocked_notified:
+                ban_info = get_ban_info(user_id)
+                reason = ban_info.get("reason", "Не указана") if ban_info else "Не указана"
+                await message.answer(f"⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ!\n\n📌 Причина: {reason}")
+                blocked_notified[str(user_id)] = True
+            return
+        
+        if is_tech_mode() and not is_admin(user_id):
+            tech_info = get_tech_info()
+            await message.answer(f"🛠️ БОТ НА ТЕХНИЧЕСКИХ РАБОТАХ\n\n🕐 ВРЕМЯ: {tech_info.get('expires_at', 'Неизвестно')}")
+            return
+        
+        await save_log_async({"command": "/start", "user_id": user_id, "username": message.from_user.username or "Нет", "time": get_msk_time()})
+        await message.answer("🔥 ДОБРО ПОЖАЛОВАТЬ!\n\nВыберите действие:", reply_markup=get_main_keyboard())
+    finally:
+        del processing_commands[user_id]
+
+@dp.message(Command("help"))
+async def help_command(message: types.Message):
+    user_id = message.from_user.id
+    if is_banned(user_id):
+        if str(user_id) not in blocked_notified:
+            ban_info = get_ban_info(user_id)
+            reason = ban_info.get("reason", "Не указана") if ban_info else "Не указана"
+            await message.answer(f"⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ!\n\n📌 Причина: {reason}")
+            blocked_notified[str(user_id)] = True
+        return
+    await message.answer(HELP_TEXT)
+
+@dp.message(Command("stop"))
+async def stop_command(message: types.Message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        await message.answer("❌ У вас нет прав!")
+        return
+    
+    args = message.text.split(maxsplit=2)
+    if len(args) < 3:
+        await message.answer("❌ /stop [run/bot/max] [max]")
+        return
+    
+    target = args[1].lower()
+    action = args[2].lower()
+    
+    if target not in ['run', 'bot', 'max'] or action != 'max':
+        await message.answer("❌ /stop [run/bot/max] [max]")
+        return
+    
+    result = await stop_runners(target, user_id, message.from_user.username)
+    await message.answer(result)
+
+@dp.message(Command("whois"))
+async def whois_command(message: types.Message):
+    user_id = message.from_user.id
+    if is_banned(user_id):
+        if str(user_id) not in blocked_notified:
+            ban_info = get_ban_info(user_id)
+            reason = ban_info.get("reason", "Не указана") if ban_info else "Не указана"
+            await message.answer(f"⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ!\n\n📌 Причина: {reason}")
+            blocked_notified[str(user_id)] = True
+        return
+    if is_tech_mode() and not is_admin(user_id):
+        tech_info = get_tech_info()
+        await message.answer(f"🛠️ БОТ НА ТЕХНИЧЕСКИХ РАБОТАХ\n\n🕐 ВРЕМЯ: {tech_info.get('expires_at', 'Неизвестно')}")
+        return
+    await message.answer("🔍 Выберите тип пробива:", reply_markup=get_main_keyboard())
+
+@dp.message(Command("idlist"))
+async def idlist_command(message: types.Message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        await message.answer("❌ У вас нет прав!")
+        return
+    try:
+        idlist = load_from_github(IDLIST_FILE) or []
+        if not idlist:
+            await message.answer("📊 Список пользователей пуст")
+            return
+        result = "👥 СПИСОК ПОЛЬЗОВАТЕЛЕЙ\n\n"
+        for item in idlist:
+            result += f"🆔 {item.get('id', '?')} → @{item.get('username', 'Нет')}\n"
+        await message.answer(result[:4000])
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+
+@dp.message(Command("logs"))
+async def logs_command(message: types.Message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        await message.answer("❌ У вас нет прав!")
+        return
+    args = message.text.split(maxsplit=2)
+    if len(args) < 2:
+        await message.answer("❌ /logs [ID] [кол-во]")
+        return
+    try:
+        target_id = int(args[1])
+        count = min(int(args[2]) if len(args) > 2 else 10, 50)
+        logs = get_logs_for_user(target_id, count)
+        if not logs:
+            await message.answer(f"📊 Логов для {target_id} нет")
+            return
+        result = f"📋 ЛОГИ ДЛЯ {target_id} (последние {len(logs)})\n\n"
+        for log in logs:
+            result += f"🕐 {log.get('time', '?')}\n📝 {log.get('command', '?')}\n\n"
+        await message.answer(result[:4000])
+    except:
+        await message.answer("❌ Неверный формат")
+
+@dp.message(Command("ban"))
+async def ban_command(message: types.Message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        await message.answer("❌ У вас нет прав!")
+        return
+    args = message.text.split(maxsplit=3)
+    if len(args) < 3:
+        await message.answer("❌ /ban [ID] [время] [причина]")
+        return
+    target_id = args[1]
+    time_str = args[2]
+    reason = args[3] if len(args) > 3 else "Без причины"
+    minutes, time_display = parse_time(time_str)
+    add_ban(target_id, reason, user_id, minutes)
+    await message.answer(f"✅ ПОЛЬЗОВАТЕЛЬ ЗАБАНЕН\n\n🆔 ID: {target_id}\n📌 Причина: {reason}\n⏱ Время: {time_display}\n🕐 Дата: {get_msk_time()}")
+    try:
+        ban_msg = f"⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ\n\n📌 Причина: {reason}\n⏱ Длительность: {time_display}\n🕐 Дата блокировки: {get_msk_time()}"
+        if minutes:
+            ban_msg += f"\n⏳ Разблокировка: {(datetime.now() + timedelta(minutes=minutes)).strftime('%d.%m.%Y %H:%M')}"
+        await bot.send_message(chat_id=int(target_id), text=ban_msg)
+    except:
+        pass
+    await save_log_async({"command": f"/ban {target_id}", "user_id": user_id, "username": message.from_user.username or "Нет", "target": target_id, "reason": reason, "time": get_msk_time()})
+
+@dp.message(Command("unban"))
+async def unban_command(message: types.Message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        await message.answer("❌ У вас нет прав!")
+        return
+    args = message.text.split(maxsplit=2)
+    if len(args) < 2:
+        await message.answer("❌ /unban [ID] [причина]")
+        return
+    target_id = args[1]
+    reason = args[2] if len(args) > 2 else "Без причины"
+    if remove_ban(target_id):
+        await message.answer(f"✅ ПОЛЬЗОВАТЕЛЬ РАЗБАНЕН\n\n🆔 ID: {target_id}\n📌 Причина: {reason}\n🕐 Дата: {get_msk_time()}")
+        try:
+            await bot.send_message(chat_id=int(target_id), text=f"✅ ВАС РАЗБЛОКИРОВАЛИ\n\n📌 Причина: {reason}\n🕐 Дата: {get_msk_time()}\n🔓 Теперь вы снова можете пользоваться ботом")
+        except:
+            pass
+    else:
+        await message.answer(f"❌ Пользователь {target_id} не найден в черном списке")
+
+@dp.message(Command("key"))
+async def key_command(message: types.Message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        await message.answer("❌ У вас нет прав!")
+        return
+    key = create_session_key()
+    await message.answer(f"🔑 Ваш ключ:\n\n`{key}`\n\n⏱ Действует 10 часов")
+
+@dp.message(Command("chkban"))
+async def chkban_command(message: types.Message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        await message.answer("❌ У вас нет прав!")
+        return
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("❌ /chkban [ID]")
+        return
+    target_id = args[1]
+    ban_info = get_ban_info(target_id)
+    if ban_info:
+        await message.answer(f"---{target_id}---\n📌 Причина: {ban_info.get('reason', 'Не указана')}\n🕐 Дата выдачи: {ban_info.get('added_at', 'Неизвестно')}\n🕐 Дата снятия: {ban_info.get('expires_at', 'НАВСЕГДА')}")
+    else:
+        await message.answer(f"⛔ {target_id} не заблокирован.")
+
+@dp.message(Command("tex"))
+async def tex_command(message: types.Message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        await message.answer("❌ У вас нет прав!")
+        return
+    args = message.text.split(maxsplit=2)
+    if len(args) < 2:
+        await message.answer("❌ /tex on [время] или /tex off")
+        return
+    action = args[1].lower()
+    if action == "on":
+        if len(args) < 3:
+            await message.answer("❌ /tex on [время]")
+            return
+        minutes, _ = parse_time(args[2])
+        expires_at = (datetime.now() + timedelta(minutes=minutes)).isoformat()
+        set_tech_mode(True, expires_at)
+        await message.answer(f"✅ ТЕХ-РАБОТЫ ВКЛЮЧЕНЫ\n🕐 Окончание: {(datetime.now() + timedelta(minutes=minutes)).strftime('%d.%m.%Y %H:%M')}")
+    elif action == "off":
+        set_tech_mode(False, None)
+        await message.answer("✅ ТЕХ-РАБОТЫ ВЫКЛЮЧЕНЫ")
+    else:
+        await message.answer("❌ /tex on [время] или /tex off")
+
+# ========== CALLBACK ==========
+@dp.callback_query()
+async def handle_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    
+    if is_banned(user_id):
+        if str(user_id) not in blocked_notified:
+            ban_info = get_ban_info(user_id)
+            reason = ban_info.get("reason", "Не указана") if ban_info else "Не указана"
+            await callback.message.answer(f"⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ!\n\n📌 Причина: {reason}")
+            blocked_notified[str(user_id)] = True
+        await callback.answer()
+        return
+    
+    if is_tech_mode() and not is_admin(user_id):
+        tech_info = get_tech_info()
+        await callback.message.answer(f"🛠️ БОТ НА ТЕХНИЧЕСКИХ РАБОТАХ\n\n🕐 ВРЕМЯ: {tech_info.get('expires_at', 'Неизвестно')}")
+        await callback.answer()
+        return
+    
+    data = callback.data
+    if data == "probe_ip":
+        await callback.message.answer("🌐 ВВЕДИТЕ IP\n📌 Пример: 8.8.8.8")
+    elif data == "probe_phone":
+        await callback.message.answer("📱 ВВЕДИТЕ НОМЕР\n📌 Пример: 89001234567")
+    elif data == "probe_user":
+        await callback.message.answer("👤 ВВЕДИТЕ @USERNAME\n📌 Пример: @username")
+    await callback.answer()
+
+# ========== ЛИЧНЫЕ СООБЩЕНИЯ ==========
+@dp.message()
+async def handle_private_message(message: types.Message):
+    user_id = message.from_user.id
+    
+    if is_banned(user_id):
+        if str(user_id) not in blocked_notified:
+            ban_info = get_ban_info(user_id)
+            reason = ban_info.get("reason", "Не указана") if ban_info else "Не указана"
+            await message.answer(f"⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ!\n\n📌 Причина: {reason}")
+            blocked_notified[str(user_id)] = True
+        return
+    
+    if is_tech_mode() and not is_admin(user_id):
+        tech_info = get_tech_info()
+        await message.answer(f"🛠️ БОТ НА ТЕХНИЧЕСКИХ РАБОТАХ\n\n🕐 ВРЕМЯ: {tech_info.get('expires_at', 'Неизвестно')}")
+        return
+    
+    if not message.text:
+        return
+    
+    text = message.text.strip()
+    
+    if text.startswith('/'):
+        return
+    
+    if text.startswith('.'):
+        await message.answer("❌ Команды с . — только в чатах с собеседниками!\n📌 В личке используй /help")
+        return
+    
+    # Пробив по IP
+    if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', text):
+        loading = await show_animation(message)
+        
+        try:
+            ipaddress.ip_address(text)
+        except:
+            await edit_normal_message(message.chat.id, loading.message_id, f"❌ Некорректный IP: {text}")
+            return
+        
+        results, success_count = await probe_ip(text)
+        final = analyze_ip_results(results)
+        
+        result_text = f"✅ РЕЗУЛЬТАТ ПРОБИВА IP\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🌐 IP-адрес: {text}\n🌍 Страна: {final['country']}\n🏙️ Регион: {final['region']}\n🏙️ Город: {final['city']}\n📡 Провайдер: {final['isp']}\n🏢 Организация: {final['org']}\n🔗 AS: {final['as']}\n⏰ Часовой пояс: {final['timezone']}\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n📊 Обработано: {success_count}/5 серверов"
+        await edit_normal_message(message.chat.id, loading.message_id, result_text)
+        await save_log_async({"command": f"IP {text}", "user_id": user_id, "username": message.from_user.username or "Нет", "target": text, "time": get_msk_time()})
+        return
+    
+    if re.match(r'^\+?\d{10,15}$', text):
+        loading = await show_animation(message)
+        results, success_count, local_data = await probe_phone(text)
+        if local_data and "error" in local_data:
+            await edit_normal_message(message.chat.id, loading.message_id, f"❌ {local_data['error']}")
+            return
+        final = analyze_phone_results(results, local_data)
+        result_text = f"✅ РЕЗУЛЬТАТ ПРОБИВА НОМЕРА\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n📱 Номер: {final['formatted']}\n📡 Оператор: {final['operator']}\n🌍 Регион: {final['region']}\n⏰ Часовой пояс: {final['timezone']}\n📊 Тип: {final['type']}\n🌐 Код страны: {final['country_code']}\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n📊 Обработано: {success_count} серверов"
+        await edit_normal_message(message.chat.id, loading.message_id, result_text)
+        await save_log_async({"command": f"Номер {text}", "user_id": user_id, "username": message.from_user.username or "Нет", "target": text, "time": get_msk_time()})
+        return
+    
+    if text.startswith('@'):
+        loading = await show_animation(message)
+        data = await probe_username(text)
+        result_text = f"✅ РЕЗУЛЬТАТ ПРОБИВА USERNAME\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n👤 Username: {data['username']}\n🆔 ID: {data['id']}\n📛 Имя: {data['name']}\n📊 Статус: {data['status']}\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        await edit_normal_message(message.chat.id, loading.message_id, result_text)
+        await save_log_async({"command": f"Юзер {text}", "user_id": user_id, "username": message.from_user.username or "Нет", "target": text, "time": get_msk_time()})
+        return
+    
+    await message.answer("❓ Неизвестная команда\n\n📌 Введи /help для списка команд")
+
+# ========== ЗАПУСК ФОНОВОГО ЛОГГЕРА ==========
+async def main():
+    print("=" * 60)
+    print("🔥 БОТ ЗАПУЩЕН!")
+    print(f"👤 АДМИН: {ADMIN_ID}")
+    print("📌 Команды с / — в личке бота")
+    print("📌 Команды с . — в чатах с собеседниками")
+    print("=" * 60)
+    
+    os.makedirs('data', exist_ok=True)
+    
+    for file in [LOGS_FILE, BANLIST_FILE, IDLIST_FILE, KEYS_FILE, TECH_FILE]:
+        if not os.path.exists(file):
+            with open(file, 'w', encoding='utf-8') as f:
+                if file == TECH_FILE:
+                    json.dump({"active": False, "expires_at": None}, f)
+                elif file == IDLIST_FILE:
+                    json.dump([], f)
+                elif file in [BANLIST_FILE, KEYS_FILE]:
+                    json.dump({}, f)
+                else:
+                    json.dump([], f)
+            print(f"✅ Создан файл: {file}")
+    
+    # Запускаем фоновый логгер
+    asyncio.create_task(log_worker())
+    print("✅ Фоновый логгер запущен")
+    
+    try:
+        await dp.start_polling(bot)
+    except Exception as e:
+        if "Conflict" in str(e):
+            print("⚠️ Конфликт! Переподключаемся...")
+            await asyncio.sleep(5)
+            await dp.start_polling(bot)
+        else:
+            raise
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("⏹️ Бот остановлен")
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+        sys.exit(1)
