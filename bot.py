@@ -7,6 +7,7 @@ import re
 import requests
 import ipaddress
 import phonenumbers
+import base64
 from phonenumbers import carrier, geocoder, timezone, number_type
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 # ===== СЕКРЕТЫ =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
+GH_TOKEN = os.getenv("GH_TOKEN", "")
 
 if not BOT_TOKEN:
     print("❌ Токен не найден!")
@@ -39,6 +41,10 @@ IDLIST_FILE = "data/idlist.json"
 KEYS_FILE = "data/keys.json"
 TECH_FILE = "data/tech.json"
 
+# ===== GITHUB API =====
+REPO = "GrifMcPo/WhoisBotDisVk"
+BRANCH = "main"
+
 business_connections = {}
 blocked_notified = {}
 
@@ -46,7 +52,6 @@ def get_msk_time():
     return (datetime.utcnow() + timedelta(hours=3)).strftime('%d.%m.%Y %H:%M:%S')
 
 def parse_time(time_str):
-    """Парсит время типа 1h, 2h30m, -1w (навсегда)"""
     if time_str == "-1w":
         return None, "НАВСЕГДА"
     
@@ -64,8 +69,93 @@ def parse_time(time_str):
     
     return total_minutes, f"{total_minutes} минут"
 
+# ========== GITHUB API ==========
+def write_to_github(file_path, content, message="Update file"):
+    if not GH_TOKEN:
+        return save_local_file(file_path, content)
+    
+    try:
+        url = f"https://api.github.com/repos/{REPO}/contents/{file_path}"
+        headers = {
+            "Authorization": f"token {GH_TOKEN}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+        
+        sha = None
+        try:
+            response = requests.get(url, headers=headers)
+            if response.status_code == 200:
+                sha = response.json().get("sha")
+        except:
+            pass
+        
+        if isinstance(content, dict) or isinstance(content, list):
+            content_str = json.dumps(content, indent=2, ensure_ascii=False)
+        else:
+            content_str = content
+        
+        content_base64 = base64.b64encode(content_str.encode('utf-8')).decode('utf-8')
+        
+        data = {
+            "message": message,
+            "content": content_base64,
+            "branch": BRANCH
+        }
+        if sha:
+            data["sha"] = sha
+        
+        response = requests.put(url, headers=headers, json=data)
+        
+        if response.status_code in [200, 201]:
+            print(f"✅ Файл {file_path} записан в GitHub")
+            return True
+        else:
+            return save_local_file(file_path, content)
+    except Exception as e:
+        print(f"❌ Ошибка записи в GitHub: {e}")
+        return save_local_file(file_path, content)
+
+def save_local_file(file_path, content):
+    try:
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        if isinstance(content, dict) or isinstance(content, list):
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(content, f, indent=2, ensure_ascii=False)
+        else:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+        return True
+    except:
+        return False
+
+def load_from_github(file_path):
+    if not GH_TOKEN:
+        return None
+    
+    try:
+        url = f"https://api.github.com/repos/{REPO}/contents/{file_path}"
+        headers = {
+            "Authorization": f"token {GH_TOKEN}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            data = response.json()
+            content = base64.b64decode(data["content"]).decode('utf-8')
+            return json.loads(content)
+        return None
+    except:
+        return None
+
 # ========== БАНЛИСТ ==========
 def load_banlist():
+    try:
+        data = load_from_github(BANLIST_FILE)
+        if data is not None:
+            return data
+    except:
+        pass
+    
     try:
         if os.path.exists(BANLIST_FILE):
             with open(BANLIST_FILE, 'r', encoding='utf-8') as f:
@@ -75,12 +165,9 @@ def load_banlist():
         return {}
 
 def save_banlist(banlist):
-    try:
-        with open(BANLIST_FILE, 'w', encoding='utf-8') as f:
-            json.dump(banlist, f, indent=2, ensure_ascii=False)
+    if write_to_github(BANLIST_FILE, banlist, "Update banlist"):
         return True
-    except:
-        return False
+    return save_local_file(BANLIST_FILE, banlist)
 
 def add_ban(user_id, reason, admin_id, time_minutes=None):
     banlist = load_banlist()
@@ -154,105 +241,60 @@ def get_ban_info(user_id):
 def is_admin(user_id):
     return user_id == ADMIN_ID
 
-def is_tech_mode():
+# ========== ТЕХРАБОТЫ ==========
+def load_tech():
     try:
-        if os.path.exists(TECH_FILE):
-            with open(TECH_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                if data.get("active", False):
-                    expires = datetime.fromisoformat(data.get("expires_at"))
-                    if datetime.now() > expires:
-                        data["active"] = False
-                        with open(TECH_FILE, 'w', encoding='utf-8') as f2:
-                            json.dump(data, f2)
-                        return False
-                    return True
-        return False
+        data = load_from_github(TECH_FILE)
+        if data is not None:
+            return data
     except:
-        return False
-
-def get_tech_info():
+        pass
+    
     try:
         if os.path.exists(TECH_FILE):
             with open(TECH_FILE, 'r', encoding='utf-8') as f:
                 return json.load(f)
+        return {"active": False, "expires_at": None}
     except:
-        pass
-    return {"active": False, "expires_at": None}
+        return {"active": False, "expires_at": None}
+
+def save_tech(data):
+    if write_to_github(TECH_FILE, data, "Update tech mode"):
+        return True
+    return save_local_file(TECH_FILE, data)
+
+def is_tech_mode():
+    data = load_tech()
+    if data.get("active", False):
+        expires = data.get("expires_at")
+        if expires:
+            try:
+                expires_dt = datetime.fromisoformat(expires)
+                if datetime.now() > expires_dt:
+                    data["active"] = False
+                    save_tech(data)
+                    return False
+            except:
+                pass
+        return True
+    return False
+
+def get_tech_info():
+    return load_tech()
 
 def set_tech_mode(active, expires_at=None):
-    os.makedirs(os.path.dirname(TECH_FILE), exist_ok=True)
     data = {"active": active, "expires_at": expires_at}
-    with open(TECH_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f)
-
-# ========== ЛОГИ ==========
-def save_log(log_entry):
-    try:
-        os.makedirs(os.path.dirname(LOGS_FILE), exist_ok=True)
-        logs = []
-        if os.path.exists(LOGS_FILE):
-            try:
-                with open(LOGS_FILE, 'r', encoding='utf-8') as f:
-                    content = f.read().strip()
-                    if content:
-                        logs = json.loads(content)
-                        if not isinstance(logs, list):
-                            logs = []
-            except:
-                logs = []
-        
-        logs.append(log_entry)
-        
-        with open(LOGS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(logs, f, indent=2, ensure_ascii=False)
-        
-        save_idlist(log_entry.get("user_id"), log_entry.get("username"))
-        return True
-    except Exception as e:
-        print(f"❌ Ошибка сохранения лога: {e}")
-        return False
-
-def save_idlist(user_id, username):
-    try:
-        os.makedirs(os.path.dirname(IDLIST_FILE), exist_ok=True)
-        idlist = []
-        if os.path.exists(IDLIST_FILE):
-            try:
-                with open(IDLIST_FILE, 'r', encoding='utf-8') as f:
-                    idlist = json.load(f)
-                    if not isinstance(idlist, list):
-                        idlist = []
-            except:
-                idlist = []
-        
-        for item in idlist:
-            if item.get("id") == user_id:
-                item["username"] = username
-                break
-        else:
-            idlist.append({"id": user_id, "username": username})
-        
-        with open(IDLIST_FILE, 'w', encoding='utf-8') as f:
-            json.dump(idlist, f, indent=2, ensure_ascii=False)
-    except:
-        pass
-
-def get_logs_for_user(user_id, count=10):
-    try:
-        if not os.path.exists(LOGS_FILE):
-            return []
-        
-        with open(LOGS_FILE, 'r', encoding='utf-8') as f:
-            all_logs = json.load(f)
-        
-        filtered = [log for log in all_logs if log.get("user_id") == user_id]
-        return filtered[-count:] if count else filtered
-    except:
-        return []
+    save_tech(data)
 
 # ========== КЛЮЧИ ==========
 def load_keys():
+    try:
+        data = load_from_github(KEYS_FILE)
+        if data is not None:
+            return data
+    except:
+        pass
+    
     try:
         if os.path.exists(KEYS_FILE):
             with open(KEYS_FILE, 'r', encoding='utf-8') as f:
@@ -262,12 +304,9 @@ def load_keys():
         return {}
 
 def save_keys(keys):
-    try:
-        with open(KEYS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(keys, f, indent=2, ensure_ascii=False)
+    if write_to_github(KEYS_FILE, keys, "Update keys"):
         return True
-    except:
-        return False
+    return save_local_file(KEYS_FILE, keys)
 
 def generate_key():
     import string, secrets
@@ -285,21 +324,95 @@ def create_session_key():
     save_keys(keys)
     return key
 
-def verify_key(key):
-    keys = load_keys()
-    if key not in keys:
+# ========== ЛОГИ ==========
+def save_log(log_entry):
+    try:
+        logs = []
+        try:
+            data = load_from_github(LOGS_FILE)
+            if data is not None:
+                logs = data
+        except:
+            pass
+        
+        if not logs:
+            try:
+                if os.path.exists(LOGS_FILE):
+                    with open(LOGS_FILE, 'r', encoding='utf-8') as f:
+                        logs = json.load(f)
+                        if not isinstance(logs, list):
+                            logs = []
+            except:
+                logs = []
+        
+        logs.append(log_entry)
+        
+        if write_to_github(LOGS_FILE, logs, "Add log"):
+            pass
+        else:
+            save_local_file(LOGS_FILE, logs)
+        
+        save_idlist(log_entry.get("user_id"), log_entry.get("username"))
+        return True
+    except Exception as e:
+        print(f"❌ Ошибка сохранения лога: {e}")
         return False
-    
-    data = keys[key]
-    expires = datetime.fromisoformat(data["expires_at"])
-    if datetime.now() > expires:
-        del keys[key]
-        save_keys(keys)
-        return False
-    
-    return True
 
-# ========== УДАЛЕНИЕ В БИЗНЕС-ЧАТЕ ==========
+def save_idlist(user_id, username):
+    try:
+        idlist = []
+        try:
+            data = load_from_github(IDLIST_FILE)
+            if data is not None:
+                idlist = data
+        except:
+            pass
+        
+        if not idlist:
+            try:
+                if os.path.exists(IDLIST_FILE):
+                    with open(IDLIST_FILE, 'r', encoding='utf-8') as f:
+                        idlist = json.load(f)
+                        if not isinstance(idlist, list):
+                            idlist = []
+            except:
+                idlist = []
+        
+        for item in idlist:
+            if item.get("id") == user_id:
+                item["username"] = username
+                break
+        else:
+            idlist.append({"id": user_id, "username": username})
+        
+        if write_to_github(IDLIST_FILE, idlist, "Update idlist"):
+            pass
+        else:
+            save_local_file(IDLIST_FILE, idlist)
+    except:
+        pass
+
+def get_logs_for_user(user_id, count=10):
+    try:
+        logs = []
+        try:
+            data = load_from_github(LOGS_FILE)
+            if data is not None:
+                logs = data
+        except:
+            pass
+        
+        if not logs:
+            if os.path.exists(LOGS_FILE):
+                with open(LOGS_FILE, 'r', encoding='utf-8') as f:
+                    logs = json.load(f)
+        
+        filtered = [log for log in logs if log.get("user_id") == user_id]
+        return filtered[-count:] if count else filtered
+    except:
+        return []
+
+# ========== БИЗНЕС API ==========
 async def delete_business_message(chat_id: int, message_id: int, connection_id: str):
     try:
         url = f'https://api.telegram.org/bot{BOT_TOKEN}/deleteBusinessMessages'
@@ -312,7 +425,6 @@ async def delete_business_message(chat_id: int, message_id: int, connection_id: 
     except:
         return False
 
-# ========== ОТПРАВКА В БИЗНЕС-ЧАТ ==========
 async def send_to_business_chat(chat_id: int, text: str, connection_id: str, reply_markup=None):
     try:
         return await bot.send_message(
@@ -325,7 +437,6 @@ async def send_to_business_chat(chat_id: int, text: str, connection_id: str, rep
         logger.error(f"❌ Ошибка отправки: {e}")
         return None
 
-# ========== РЕДАКТИРОВАНИЕ В БИЗНЕС-ЧАТЕ ==========
 async def edit_business_message(chat_id: int, message_id: int, text: str, connection_id: str):
     try:
         url = f'https://api.telegram.org/bot{BOT_TOKEN}/editMessageText'
@@ -340,7 +451,6 @@ async def edit_business_message(chat_id: int, message_id: int, text: str, connec
     except:
         return False
 
-# ========== РЕДАКТИРОВАНИЕ В ОБЫЧНОМ ЧАТЕ ==========
 async def edit_normal_message(chat_id: int, message_id: int, text: str):
     try:
         await bot.edit_message_text(
@@ -353,35 +463,12 @@ async def edit_normal_message(chat_id: int, message_id: int, text: str):
         return False
 
 # ========== АНИМАЦИЯ ==========
-async def show_animation(target, connection_id=None, type_name="IP"):
+async def show_animation(target, connection_id=None):
     stages = [
-        f"🔄 ПОДКЛЮЧЕНИЕ К СЕРВЕРАМ\n\n"
-        f"📡 Сервер #1... ████░░░░░░ 40%\n"
-        f"📡 Сервер #2... ░░░░░░░░░░ 0%\n"
-        f"📡 Сервер #3... ░░░░░░░░░░ 0%\n"
-        f"📡 Сервер #4... ░░░░░░░░░░ 0%\n"
-        f"📡 Сервер #5... ░░░░░░░░░░ 0%\n\n"
-        f"⏳ Ожидайте...",
-        
-        f"🔄 ПОДКЛЮЧЕНИЕ К СЕРВЕРАМ\n\n"
-        f"📡 Сервер #1... ████████░░ 80%\n"
-        f"📡 Сервер #2... ██████░░░░ 60%\n"
-        f"📡 Сервер #3... ████░░░░░░ 40%\n"
-        f"📡 Сервер #4... ██░░░░░░░░ 20%\n"
-        f"📡 Сервер #5... ░░░░░░░░░░ 0%\n\n"
-        f"⏳ Ожидайте...",
-        
-        f"🔄 ПОДКЛЮЧЕНИЕ К СЕРВЕРАМ\n\n"
-        f"📡 Сервер #1... ██████████ 100% ✅\n"
-        f"📡 Сервер #2... ██████████ 100% ✅\n"
-        f"📡 Сервер #3... ████████░░ 80%\n"
-        f"📡 Сервер #4... ██████░░░░ 60%\n"
-        f"📡 Сервер #5... ████░░░░░░ 40%\n\n"
-        f"⏳ Ожидайте...",
-        
-        f"✅ ПОДКЛЮЧЕНИЕ ВЫПОЛНЕНО\n\n"
-        f"📊 Получение данных...\n"
-        f"⏳ Обработка информации..."
+        "🔄 ПОДКЛЮЧЕНИЕ К СЕРВЕРАМ\n\n📡 Сервер #1... ████░░░░░░ 40%\n📡 Сервер #2... ░░░░░░░░░░ 0%\n📡 Сервер #3... ░░░░░░░░░░ 0%\n📡 Сервер #4... ░░░░░░░░░░ 0%\n📡 Сервер #5... ░░░░░░░░░░ 0%\n\n⏳ Ожидайте...",
+        "🔄 ПОДКЛЮЧЕНИЕ К СЕРВЕРАМ\n\n📡 Сервер #1... ████████░░ 80%\n📡 Сервер #2... ██████░░░░ 60%\n📡 Сервер #3... ████░░░░░░ 40%\n📡 Сервер #4... ██░░░░░░░░ 20%\n📡 Сервер #5... ░░░░░░░░░░ 0%\n\n⏳ Ожидайте...",
+        "🔄 ПОДКЛЮЧЕНИЕ К СЕРВЕРАМ\n\n📡 Сервер #1... ██████████ 100% ✅\n📡 Сервер #2... ██████████ 100% ✅\n📡 Сервер #3... ████████░░ 80%\n📡 Сервер #4... ██████░░░░ 60%\n📡 Сервер #5... ████░░░░░░ 40%\n\n⏳ Ожидайте...",
+        "✅ ПОДКЛЮЧЕНИЕ ВЫПОЛНЕНО\n\n📊 Получение данных...\n⏳ Обработка информации..."
     ]
     
     if connection_id:
@@ -397,7 +484,15 @@ async def show_animation(target, connection_id=None, type_name="IP"):
             await edit_normal_message(target, msg.message_id, stage)
         return msg
 
-# ========== БИЗНЕС CONNECTION ==========
+# ========== КЛАВИАТУРА ==========
+def get_main_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌐 ПРОБИВ IP", callback_data="probe_ip")],
+        [InlineKeyboardButton(text="📱 ПРОБИВ НОМЕРА", callback_data="probe_phone")],
+        [InlineKeyboardButton(text="👤 ПРОБИВ ЮЗЕРА", callback_data="probe_user")],
+    ])
+
+# ========== BUSINESS CONNECTION ==========
 @dp.business_connection()
 async def handle_business_connection(connection: BusinessConnection):
     if connection.user:
@@ -406,10 +501,6 @@ async def handle_business_connection(connection: BusinessConnection):
         username = connection.user.username or "Нет юзернейма"
         
         if not is_admin(user_id):
-            await bot.send_message(
-                chat_id=user_id,
-                text="❌ У вас нет прав на подключение бизнес-бота!\nТолько администратор может использовать эту функцию."
-            )
             return
         
         business_connections[str(user_id)] = connection_id
@@ -418,13 +509,10 @@ async def handle_business_connection(connection: BusinessConnection):
         
         await bot.send_message(
             chat_id=user_id,
-            text=f"✅ БОТ ПОДКЛЮЧЕН К БИЗНЕС-АККАУНТУ!\n\n"
-                 f"🆔 ID: {user_id}\n"
-                 f"📌 Команды работают в чатах с собеседниками!\n"
-                 f"🔥 Введите .help для списка команд"
+            text=f"✅ БОТ ПОДКЛЮЧЕН К БИЗНЕС-АККАУНТУ!\n\n🆔 ID: {user_id}\n📌 Команды работают в чатах с собеседниками!\n🔥 Введите .help для списка команд"
         )
 
-# ========== БИЗНЕС MESSAGE ==========
+# ========== BUSINESS MESSAGE ==========
 @dp.business_message()
 async def handle_business_message(message: types.Message):
     try:
@@ -475,25 +563,7 @@ async def handle_business_message(message: types.Message):
         if text.lower() == '.help':
             await send_to_business_chat(
                 chat_id,
-                "📚 ДОСТУПНЫЕ КОМАНДЫ\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "🔍 ПРОБИВ\n\n"
-                ".whois ip [IP] — пробив IP-адреса\n"
-                ".whois n [номер] — пробив номера телефона\n"
-                ".whois qz [@username] — пробив Telegram-юзернейма\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "⚡ ДОПОЛНИТЕЛЬНО\n\n"
-                ".help — справка\n"
-                ".idlist — список пользователей\n"
-                ".logs (ID) (кол-во) — логи пользователя\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "🛡️ НАКАЗАНИЯ (PLUS)\n\n"
-                ".ban (I) (T) (R) — Выдать бан\n"
-                ".unban (I) (R) — Снять блокировку\n"
-                ".chkban (I) — Проверить бан\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "📌 .команды — в чатах с собеседниками\n"
-                "📌 /команды — в личке с ботом",
+                "📚 ДОСТУПНЫЕ КОМАНДЫ\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔍 ПРОБИВ\n\n.whois ip [IP] — пробив IP-адреса\n.whois n [номер] — пробив номера телефона\n.whois qz [@username] — пробив Telegram-юзернейма\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n⚡ ДОПОЛНИТЕЛЬНО\n\n.help — справка\n.idlist — список пользователей\n.logs (ID) (кол-во) — логи пользователя\n.key — получить ключ для сайта\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🛡️ НАКАЗАНИЯ\n\n.ban (ID) (время) (причина) — бан\n.unban (ID) (причина) — разбан\n.chkban (ID) — проверить бан\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🛠️ ТЕХРАБОТЫ\n\n.tex on (время) — включить\n.tex off — выключить\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n📌 .команды — в чатах с собеседниками\n📌 /команды — в личке с ботом",
                 connection_id
             )
             return
@@ -501,8 +571,13 @@ async def handle_business_message(message: types.Message):
         # .idlist
         if text.lower() == '.idlist':
             try:
-                with open(IDLIST_FILE, 'r', encoding='utf-8') as f:
-                    idlist = json.load(f)
+                idlist = []
+                try:
+                    data = load_from_github(IDLIST_FILE)
+                    if data is not None:
+                        idlist = data
+                except:
+                    pass
                 
                 if not idlist:
                     await send_to_business_chat(chat_id, "📊 Список пользователей пуст", connection_id)
@@ -520,8 +595,8 @@ async def handle_business_message(message: types.Message):
                         await send_to_business_chat(chat_id, part, connection_id)
                 else:
                     await send_to_business_chat(chat_id, result, connection_id)
-            except:
-                await send_to_business_chat(chat_id, "❌ Ошибка загрузки списка", connection_id)
+            except Exception as e:
+                await send_to_business_chat(chat_id, f"❌ Ошибка: {e}", connection_id)
             return
         
         # .logs
@@ -537,7 +612,7 @@ async def handle_business_message(message: types.Message):
                 if count > 50:
                     count = 50
             except:
-                await send_to_business_chat(chat_id, "❌ Неверный формат ID или количества", connection_id)
+                await send_to_business_chat(chat_id, "❌ Неверный формат", connection_id)
                 return
             
             logs = get_logs_for_user(target_id, count)
@@ -576,11 +651,7 @@ async def handle_business_message(message: types.Message):
             
             await send_to_business_chat(
                 chat_id,
-                f"✅ ПОЛЬЗОВАТЕЛЬ ЗАБАНЕН\n\n"
-                f"🆔 ID: {target_id}\n"
-                f"📌 Причина: {reason}\n"
-                f"⏱ Время: {time_display}\n"
-                f"🕐 Дата: {get_msk_time()}",
+                f"✅ ПОЛЬЗОВАТЕЛЬ ЗАБАНЕН\n\n🆔 ID: {target_id}\n📌 Причина: {reason}\n⏱ Время: {time_display}\n🕐 Дата: {get_msk_time()}",
                 connection_id
             )
             
@@ -615,11 +686,7 @@ async def handle_business_message(message: types.Message):
             if remove_ban(target_id):
                 await send_to_business_chat(
                     chat_id,
-                    f"✅ ПОЛЬЗОВАТЕЛЬ РАЗБАНЕН\n\n"
-                    f"🆔 ID: {target_id}\n"
-                    f"📌 Причина разбана: {reason}\n"
-                    f"🕐 Дата: {get_msk_time()}\n"
-                    f"🔓 Пользователь снова может пользоваться ботом",
+                    f"✅ ПОЛЬЗОВАТЕЛЬ РАЗБАНЕН\n\n🆔 ID: {target_id}\n📌 Причина разбана: {reason}\n🕐 Дата: {get_msk_time()}\n🔓 Пользователь снова может пользоваться ботом",
                     connection_id
                 )
                 try:
@@ -646,11 +713,7 @@ async def handle_business_message(message: types.Message):
             if ban_info:
                 await send_to_business_chat(
                     chat_id,
-                    f"---{target_id}---\n"
-                    f"📌 Причина: {ban_info.get('reason', 'Не указана')}\n"
-                    f"🕐 Дата выдачи: {ban_info.get('added_at', 'Неизвестно')}\n"
-                    f"🕐 Дата снятия: {ban_info.get('expires_at', 'НАВСЕГДА')}\n"
-                    f"🔓 Осталось: {ban_info.get('expires_at', 'Навсегда')}",
+                    f"---{target_id}---\n📌 Причина: {ban_info.get('reason', 'Не указана')}\n🕐 Дата выдачи: {ban_info.get('added_at', 'Неизвестно')}\n🕐 Дата снятия: {ban_info.get('expires_at', 'НАВСЕГДА')}\n🔓 Осталось: {ban_info.get('expires_at', 'Навсегда')}",
                     connection_id
                 )
             else:
@@ -707,17 +770,12 @@ async def handle_business_message(message: types.Message):
             command_type = parts[1].lower()
             target = parts[2]
             
-            loading = await show_animation(chat_id, connection_id, "IP")
+            loading = await show_animation(chat_id, connection_id)
             await asyncio.sleep(1)
             await edit_business_message(
                 chat_id,
                 loading.message_id,
-                f"✅ РЕЗУЛЬТАТ ПРОБИВА\n\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🌐 {command_type.upper()}: {target}\n"
-                f"🌍 Статус: Успешно обработано\n"
-                f"📊 Использовано серверов: 20/20\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                f"✅ РЕЗУЛЬТАТ ПРОБИВА\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🌐 {command_type.upper()}: {target}\n📊 Использовано серверов: 20/20\n🛡️ Доверенность: 95%\n━━━━━━━━━━━━━━━━━━━━━━━━━━",
                 connection_id
             )
             
@@ -758,16 +816,9 @@ async def start(message: types.Message):
         "time": get_msk_time()
     })
     
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🌐 ПРОБИВ IP", callback_data="probe_ip")],
-        [InlineKeyboardButton(text="📱 ПРОБИВ НОМЕРА", callback_data="probe_phone")],
-        [InlineKeyboardButton(text="👤 ПРОБИВ ЮЗЕРА", callback_data="probe_user")],
-    ])
-    
     await message.answer(
-        "🔥 ДОБРО ПОЖАЛОВАТЬ В СИСТЕМУ!\n\n"
-        "Выберите действие:",
-        reply_markup=keyboard
+        "🔥 ДОБРО ПОЖАЛОВАТЬ В СИСТЕМУ!\n\nВыберите действие:",
+        reply_markup=get_main_keyboard()
     )
 
 @dp.message(Command("help"))
@@ -793,7 +844,7 @@ async def help_command(message: types.Message):
         "/ban — Бан (админ)\n"
         "/unban — Разбан (админ)\n"
         "/chkban (ID) — Проверить бан (админ)\n"
-        "/key — Получить ключ для сайта (админ)\n\n"
+        "/key — Ключ для сайта (админ)\n\n"
         "🔹 В ЧАТАХ (с .):\n"
         ".help — Справка\n"
         ".idlist — Список пользователей\n"
@@ -826,15 +877,9 @@ async def whois_command(message: types.Message):
         await message.answer(f"🛠️ БОТ НА ТЕХНИЧЕСКИХ РАБОТАХ\n\n🕐 ВРЕМЯ: {tech_info.get('expires_at', 'Неизвестно')}")
         return
     
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🌐 ПРОБИВ IP", callback_data="probe_ip")],
-        [InlineKeyboardButton(text="📱 ПРОБИВ НОМЕРА", callback_data="probe_phone")],
-        [InlineKeyboardButton(text="👤 ПРОБИВ ЮЗЕРА", callback_data="probe_user")],
-    ])
-    
     await message.answer(
         "🔍 Выберите тип пробива:",
-        reply_markup=keyboard
+        reply_markup=get_main_keyboard()
     )
 
 @dp.message(Command("idlist"))
@@ -846,8 +891,13 @@ async def idlist_command(message: types.Message):
         return
     
     try:
-        with open(IDLIST_FILE, 'r', encoding='utf-8') as f:
-            idlist = json.load(f)
+        idlist = []
+        try:
+            data = load_from_github(IDLIST_FILE)
+            if data is not None:
+                idlist = data
+        except:
+            pass
         
         if not idlist:
             await message.answer("📊 Список пользователей пуст")
@@ -865,8 +915,8 @@ async def idlist_command(message: types.Message):
                 await message.answer(part)
         else:
             await message.answer(result)
-    except:
-        await message.answer("❌ Ошибка загрузки списка")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
 
 @dp.message(Command("logs"))
 async def logs_command(message: types.Message):
@@ -887,7 +937,7 @@ async def logs_command(message: types.Message):
         if count > 50:
             count = 50
     except:
-        await message.answer("❌ Неверный формат ID или количества")
+        await message.answer("❌ Неверный формат")
         return
     
     logs = get_logs_for_user(target_id, count)
@@ -930,11 +980,7 @@ async def ban_command(message: types.Message):
     add_ban(target_id, reason, user_id, minutes)
     
     await message.answer(
-        f"✅ ПОЛЬЗОВАТЕЛЬ ЗАБАНЕН\n\n"
-        f"🆔 ID: {target_id}\n"
-        f"📌 Причина: {reason}\n"
-        f"⏱ Время: {time_display}\n"
-        f"🕐 Дата: {get_msk_time()}"
+        f"✅ ПОЛЬЗОВАТЕЛЬ ЗАБАНЕН\n\n🆔 ID: {target_id}\n📌 Причина: {reason}\n⏱ Время: {time_display}\n🕐 Дата: {get_msk_time()}"
     )
     
     try:
@@ -972,11 +1018,7 @@ async def unban_command(message: types.Message):
     
     if remove_ban(target_id):
         await message.answer(
-            f"✅ ПОЛЬЗОВАТЕЛЬ РАЗБАНЕН\n\n"
-            f"🆔 ID: {target_id}\n"
-            f"📌 Причина разбана: {reason}\n"
-            f"🕐 Дата: {get_msk_time()}\n"
-            f"🔓 Пользователь снова может пользоваться ботом"
+            f"✅ ПОЛЬЗОВАТЕЛЬ РАЗБАНЕН\n\n🆔 ID: {target_id}\n📌 Причина разбана: {reason}\n🕐 Дата: {get_msk_time()}\n🔓 Пользователь снова может пользоваться ботом"
         )
         try:
             await bot.send_message(
@@ -1006,11 +1048,7 @@ async def chkban_command(message: types.Message):
     
     if ban_info:
         await message.answer(
-            f"---{target_id}---\n"
-            f"📌 Причина: {ban_info.get('reason', 'Не указана')}\n"
-            f"🕐 Дата выдачи: {ban_info.get('added_at', 'Неизвестно')}\n"
-            f"🕐 Дата снятия: {ban_info.get('expires_at', 'НАВСЕГДА')}\n"
-            f"🔓 Осталось: {ban_info.get('expires_at', 'Навсегда')}"
+            f"---{target_id}---\n📌 Причина: {ban_info.get('reason', 'Не указана')}\n🕐 Дата выдачи: {ban_info.get('added_at', 'Неизвестно')}\n🕐 Дата снятия: {ban_info.get('expires_at', 'НАВСЕГДА')}\n🔓 Осталось: {ban_info.get('expires_at', 'Навсегда')}"
         )
     else:
         await message.answer(f"⛔ Данный {target_id} не заблокирован.")
@@ -1027,6 +1065,37 @@ async def key_command(message: types.Message):
     await message.answer(
         f"🔑 Ваш ключ для сайта:\n\n`{key}`\n\n⏱ Действует 10 часов\n🌐 Сайт: https://grifmcpo.github.io/WhoisBotDisVk/"
     )
+
+@dp.message(Command("tex"))
+async def tex_command(message: types.Message):
+    user_id = message.from_user.id
+    
+    if not is_admin(user_id):
+        await message.answer("❌ У вас нет прав!")
+        return
+    
+    args = message.text.split(maxsplit=2)
+    if len(args) < 2:
+        await message.answer("❌ /tex on [время] или /tex off")
+        return
+    
+    action = args[1].lower()
+    
+    if action == "on":
+        if len(args) < 3:
+            await message.answer("❌ /tex on [время]\nПример: /tex on 1h")
+            return
+        
+        time_str = args[2]
+        minutes, time_display = parse_time(time_str)
+        expires_at = (datetime.now() + timedelta(minutes=minutes)).isoformat()
+        set_tech_mode(True, expires_at)
+        await message.answer(f"✅ ТЕХ-РАБОТЫ ВКЛЮЧЕНЫ\n🕐 Окончание: {(datetime.now() + timedelta(minutes=minutes)).strftime('%d.%m.%Y %H:%M')}")
+    elif action == "off":
+        set_tech_mode(False, None)
+        await message.answer("✅ ТЕХ-РАБОТЫ ВЫКЛЮЧЕНЫ")
+    else:
+        await message.answer("❌ /tex on [время] или /tex off")
 
 # ========== CALLBACK ==========
 @dp.callback_query()
@@ -1086,10 +1155,7 @@ async def handle_private_message(message: types.Message):
         return
     
     if text.startswith('.'):
-        await message.answer(
-            "❌ Команды с . работают только в чатах с собеседниками!\n"
-            "📌 В личке используй команды с / (например /help)"
-        )
+        await message.answer("❌ Команды с . работают только в чатах с собеседниками!\n📌 В личке используй команды с /")
         return
     
     # Пробив по IP
@@ -1099,13 +1165,7 @@ async def handle_private_message(message: types.Message):
         await edit_normal_message(
             message.chat.id,
             loading.message_id,
-            f"✅ РЕЗУЛЬТАТ ПРОБИВА IP\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🌐 IP-адрес: {text}\n"
-            f"🌍 Город: Москва (пример)\n"
-            f"📡 Оператор: Пример\n"
-            f"🛡️ Доверенность: 95%\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            f"✅ РЕЗУЛЬТАТ ПРОБИВА IP\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🌐 IP-адрес: {text}\n🌍 Город: Москва (пример)\n📡 Оператор: Пример\n🛡️ Доверенность: 95%\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
         save_log({
             "command": f"IP {text}",
@@ -1123,13 +1183,7 @@ async def handle_private_message(message: types.Message):
         await edit_normal_message(
             message.chat.id,
             loading.message_id,
-            f"✅ РЕЗУЛЬТАТ ПРОБИВА НОМЕРА\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📱 Номер: {text}\n"
-            f"📡 Оператор: Пример\n"
-            f"🌍 Регион: Москва (пример)\n"
-            f"🛡️ Доверенность: 92%\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            f"✅ РЕЗУЛЬТАТ ПРОБИВА НОМЕРА\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n📱 Номер: {text}\n📡 Оператор: Пример\n🌍 Регион: Москва (пример)\n🛡️ Доверенность: 92%\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
         save_log({
             "command": f"Номер {text}",
@@ -1147,13 +1201,7 @@ async def handle_private_message(message: types.Message):
         await edit_normal_message(
             message.chat.id,
             loading.message_id,
-            f"✅ РЕЗУЛЬТАТ ПРОБИВА USERNAME\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"👤 Username: {text}\n"
-            f"🆔 ID: 123456789 (пример)\n"
-            f"📛 Имя: Пример\n"
-            f"🛡️ Доверенность: 88%\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            f"✅ РЕЗУЛЬТАТ ПРОБИВА USERNAME\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n👤 Username: {text}\n🆔 ID: 123456789 (пример)\n📛 Имя: Пример\n🛡️ Доверенность: 88%\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
         save_log({
             "command": f"Юзер {text}",
@@ -1164,23 +1212,21 @@ async def handle_private_message(message: types.Message):
         })
         return
     
-    await message.answer(
-        "❓ Неизвестная команда\n\n"
-        "📌 Введи /help для списка команд\n"
-        "📌 В чатах с собеседниками используй .команды"
-    )
+    await message.answer("❓ Неизвестная команда\n\n📌 Введи /help для списка команд")
 
 # ========== ЗАПУСК ==========
 async def main():
     print("=" * 60)
     print("🔥 БОТ ЗАПУЩЕН!")
     print(f"👤 АДМИН: {ADMIN_ID}")
+    print(f"🔑 GH_TOKEN: {'✅' if GH_TOKEN else '❌'}")
     print("📌 Команды с / — в личке бота")
     print("📌 Команды с . — в чатах с собеседниками")
     print("=" * 60)
     
     os.makedirs('data', exist_ok=True)
     
+    # Создаём файлы если их нет
     for file in [LOGS_FILE, BANLIST_FILE, IDLIST_FILE, KEYS_FILE, TECH_FILE]:
         if not os.path.exists(file):
             with open(file, 'w', encoding='utf-8') as f:
