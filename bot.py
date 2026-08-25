@@ -1,44 +1,46 @@
 import os
 import json
-import time
 import asyncio
 import logging
 import random
 import re
-import string
 from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
-from telegram.constants import ParseMode
+from typing import Optional, Dict, List
 
-# Настройка логирования
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.enums import ParseMode
+from aiogram.filters import Command, CommandObject
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.client.default import DefaultBotProperties
+
+# МОЩНОЕ ЛОГИРОВАНИЕ
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Получение токенов из секретов GitHub
-BOT_TOKEN = os.getenv('BOT_TOKEN')
+# ДОПОЛНИТЕЛЬНЫЙ ЛОГГЕР ДЛЯ СООБЩЕНИЙ
+msg_logger = logging.getLogger('messages')
+msg_logger.setLevel(logging.INFO)
 
-ADMIN_ID = 0
-admin_env = os.getenv('ADMIN_ID', '')
-if admin_env:
-    try:
-        ADMIN_ID = int(admin_env)
-        logger.info(f'✅ ADMIN_ID установлен: {ADMIN_ID}')
-    except ValueError:
-        logger.warning(f'⚠️ ADMIN_ID имеет неверный формат: "{admin_env}"')
-else:
-    logger.warning('⚠️ ADMIN_ID не задан в секретах!')
+# Получение токенов
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+ADMIN_ID = int(os.getenv('ADMIN_ID', '0') or '0')
 
 if not BOT_TOKEN:
-    logger.error('❌ BOT_TOKEN не найден в переменных окружения!')
-    raise ValueError("BOT_TOKEN not set in environment variables!")
+    logger.error('❌ BOT_TOKEN не найден!')
+    raise ValueError("BOT_TOKEN not set!")
 
-logger.info(f'🤖 Бот запускается с ADMIN_ID: {ADMIN_ID}')
+logger.info(f'🤖 Бот запускается')
+logger.info(f'👑 ADMIN_ID: {ADMIN_ID}')
 
-# Файлы для хранения данных
+# Инициализация бота и диспетчера
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher()
+
+# Файлы для данных
 FILES = {
     'banlist': 'banlist.json',
     'logs': 'logs.json',
@@ -51,6 +53,7 @@ FILES = {
 maintenance_mode = False
 maintenance_until = None
 banned_notified = set()
+user_states = {}
 
 # ─── Работа с файлами ───
 
@@ -94,7 +97,7 @@ def progress_bar(percent):
 def parse_ban_time(time_str: str) -> int:
     time_str = time_str.lower().strip()
     
-    if time_str == '-1w' or time_str == 'forever' or time_str == 'навсегда':
+    if time_str in ['-1w', 'forever', 'навсегда']:
         return -1
     
     total_minutes = 0
@@ -202,9 +205,12 @@ async def set_tech_works(active, until=None):
     except Exception as e:
         logger.error(f'Ошибка настройки тех-работ: {e}')
 
-# ─── Анимация подключения ───
+def is_admin(user_id):
+    return ADMIN_ID != 0 and user_id == ADMIN_ID
 
-async def show_connection_animation(context, chat_id, message_id, action_type):
+# ─── Анимация ───
+
+async def show_connection_animation(message: Message, action_type: str):
     stages = [
         {
             'title': '🔄 ПОДКЛЮЧЕНИЕ К СЕРВЕРАМ',
@@ -243,6 +249,8 @@ async def show_connection_animation(context, chat_id, message_id, action_type):
         }
     ]
     
+    msg = await message.answer("⏳ Подключение...")
+    
     for stage in stages:
         if stage.get('final'):
             text = f"""✅ ПОДКЛЮЧЕНИЕ ВЫПОЛНЕНО
@@ -250,15 +258,11 @@ async def show_connection_animation(context, chat_id, message_id, action_type):
 📊 Получение данных...
 ⏳ Обработка информации..."""
             try:
-                await context.bot.edit_message_text(
-                    text=text,
-                    chat_id=chat_id,
-                    message_id=message_id
-                )
+                await msg.edit_text(text)
             except:
                 pass
             await asyncio.sleep(0.5)
-            return
+            return msg
         
         text = f"{stage['title']}\n\n"
         for server in stage['servers']:
@@ -268,16 +272,14 @@ async def show_connection_animation(context, chat_id, message_id, action_type):
         text += "\n⏳ Ожидайте..."
         
         try:
-            await context.bot.edit_message_text(
-                text=text,
-                chat_id=chat_id,
-                message_id=message_id
-            )
+            await msg.edit_text(text)
         except:
             pass
         await asyncio.sleep(0.4)
+    
+    return msg
 
-# ─── Результаты пробива ───
+# ─── Результаты ───
 
 def format_ip_result(data):
     return f"""✅ РЕЗУЛЬТАТ ПРОБИВА IP
@@ -345,11 +347,16 @@ def format_username_result(data):
 
 # ─── Клавиатуры ───
 
-MENU_KEYBOARD = InlineKeyboardMarkup([
-    [InlineKeyboardButton("1️⃣ Пробив IP", callback_data='ip')],
-    [InlineKeyboardButton("2️⃣ Пробив номера", callback_data='phone')],
-    [InlineKeyboardButton("3️⃣ Пробив юзера (@)", callback_data='username')]
-])
+def get_menu_keyboard():
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="1️⃣ Пробив IP", callback_data="ip"),
+        InlineKeyboardButton(text="2️⃣ Пробив номера", callback_data="phone"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="3️⃣ Пробив юзера (@)", callback_data="username"),
+    )
+    return builder.as_markup()
 
 HELP_TEXT = """📚 ДОСТУПНЫЕ КОМАНДЫ
 
@@ -377,27 +384,314 @@ HELP_TEXT = """📚 ДОСТУПНЫЕ КОМАНДЫ
 📌 .команды — в чатах с собеседниками (Business API)
 📌 /команды — в личке с ботом"""
 
-# ─── Проверка админа ───
-
-def is_admin(user_id):
-    return ADMIN_ID != 0 and user_id == ADMIN_ID
-
 # ─── Удаление сообщения ───
 
-async def try_delete_message(context, chat_id, message_id):
+async def delete_message(message: Message):
     try:
-        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        await message.delete()
+        logger.info(f'🗑️ Удалено сообщение {message.message_id}')
     except Exception as e:
-        logger.error(f'Ошибка удаления сообщения: {e}')
+        logger.error(f'❌ Не удалось удалить: {e}')
 
-# ─── Бан/Разбан ───
+# ─── ОБРАБОТЧИК ВСЕХ СООБЩЕНИЙ (МОЩНЫЙ ЛОГ) ───
 
-async def handle_ban(update, context, args, is_business):
-    if not is_admin(update.effective_user.id):
+@dp.message()
+async def handle_all_messages(message: Message):
+    """Обработчик ВСЕХ сообщений с мощным логированием"""
+    user_id = message.from_user.id
+    username = message.from_user.username or "без юзера"
+    text = message.text or "[НЕТ ТЕКСТА]"
+    chat_id = message.chat.id
+    chat_type = message.chat.type
+    
+    # МОЩНЫЙ ЛОГ - видно каждое сообщение
+    logger.info(f'📩 [ВХОДЯЩЕЕ] от {user_id} (@{username}) в чат {chat_id} ({chat_type}): "{text[:100]}"')
+    
+    # Проверка на бан
+    ban = await is_banned(user_id)
+    if ban:
+        if user_id not in banned_notified:
+            banned_notified.add(user_id)
+            if ban.get('forever', False):
+                await message.answer(
+                    f'⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ НАВСЕГДА\n\n'
+                    f'📌 Причина: {ban["reason"]}\n'
+                    f'🕐 Дата блокировки: {datetime.fromisoformat(ban["banned_at"]).strftime("%Y-%m-%d %H:%M:%S")}'
+                )
+            else:
+                await message.answer(
+                    f'⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ\n\n'
+                    f'📌 Причина: {ban["reason"]}\n'
+                    f'⏱ Длительность: {ban.get("duration", "неизвестно")}\n'
+                    f'🕐 Дата блокировки: {datetime.fromisoformat(ban["banned_at"]).strftime("%Y-%m-%d %H:%M:%S")}\n'
+                    f'⏳ Разблокировка: {datetime.fromisoformat(ban["unban_at"]).strftime("%Y-%m-%d %H:%M:%S")}'
+                )
+        if text.startswith('.') or text.startswith('/'):
+            await delete_message(message)
         return
     
+    # Тех работы
+    global maintenance_mode, maintenance_until
+    if maintenance_mode and not is_admin(user_id):
+        if maintenance_until and datetime.now().isoformat() > maintenance_until:
+            maintenance_mode = False
+        else:
+            if text.startswith('.') or text.startswith('/'):
+                await delete_message(message)
+            await message.answer(
+                f'🛠️ БОТ НА ТЕХНИЧЕСКИХ РАБОТАХ\n\n'
+                f'🕐 ВРЕМЯ: до {datetime.fromisoformat(maintenance_until).strftime("%Y-%m-%d %H:%M:%S")}'
+            )
+            return
+    
+    # Сохраняем пользователя
+    await save_user(user_id, username, message.from_user.first_name)
+    
+    # ─── ОБРАБОТКА КОМАНД ───
+    
+    # ЛС команды (начинаются с /)
+    if text.startswith('/'):
+        await handle_dm_command(message, text)
+        return
+    
+    # Бизнес-команды (начинаются с .) - работают везде!
+    if text.startswith('.'):
+        await handle_business_command(message, text)
+        return
+    
+    # Если это не команда, но мы ждем ввод
+    if user_id in user_states and user_states[user_id].get('waiting_input'):
+        await handle_user_input(message)
+        return
+
+# ─── ОБРАБОТКА ЛС КОМАНД ───
+
+async def handle_dm_command(message: Message, text: str):
+    """Обработка команд в личке (/команды)"""
+    user_id = message.from_user.id
+    username = message.from_user.username
+    
+    logger.info(f'🔄 [ЛС КОМАНДА] /{text.split()[0]} от {user_id}')
+    
+    await log_command(user_id, username, text)
+    
+    parts = text[1:].split()
+    if not parts:
+        return
+    
+    cmd = parts[0].lower()
+    args = parts[1:] if len(parts) > 1 else []
+    
+    # /start
+    if cmd == 'start':
+        await message.answer(
+            '👋 Привет! Я бот для пробива информации.\n\n'
+            'Выбери действие:',
+            reply_markup=get_menu_keyboard()
+        )
+        return
+    
+    # /menu
+    if cmd == 'menu':
+        await message.answer(
+            '📋 МЕНЮ БОТА\n\nВыберите действие:',
+            reply_markup=get_menu_keyboard()
+        )
+        return
+    
+    # /help
+    if cmd == 'help':
+        await message.answer(HELP_TEXT)
+        return
+    
+    # Админ команды
+    if not is_admin(user_id):
+        logger.warning(f'⛔ Не-админ {user_id} пытался использовать /{cmd}')
+        return
+    
+    if cmd == 'ban':
+        await handle_ban(message, args)
+        return
+    
+    if cmd == 'unban':
+        await handle_unban(message, args)
+        return
+    
+    if cmd == 'chkban':
+        await handle_chkban(message, args)
+        return
+    
+    if cmd == 'logs':
+        await handle_logs(message, args)
+        return
+    
+    if cmd == 'idlist':
+        await handle_idlist(message)
+        return
+    
+    if cmd == 'key':
+        await handle_key(message)
+        return
+    
+    if cmd == 'tex':
+        await handle_tex(message, args)
+        return
+    
+    await message.answer(f'❌ Неизвестная команда: {cmd}')
+
+# ─── ОБРАБОТКА БИЗНЕС-КОМАНД ───
+
+async def handle_business_command(message: Message, text: str):
+    """Обработка бизнес-команд (.команды) - работают в ЛЮБЫХ чатах!"""
+    user_id = message.from_user.id
+    username = message.from_user.username
+    chat_id = message.chat.id
+    
+    logger.info(f'🔄 [BUSINESS API] .{text.split()[0]} от {user_id} в чате {chat_id}')
+    
+    # Удаляем команду
+    await delete_message(message)
+    
+    await log_command(user_id, username, text)
+    
+    parts = text[1:].split()
+    if not parts:
+        return
+    
+    cmd = parts[0].lower()
+    args = parts[1:] if len(parts) > 1 else []
+    
+    # .help
+    if cmd == 'help':
+        await message.answer(HELP_TEXT)
+        return
+    
+    # .whois
+    if cmd == 'whois':
+        if len(args) < 2:
+            await message.answer(
+                '❌ Укажите тип и данные для пробива.\n\n'
+                'Примеры:\n.whois ip 8.8.8.8\n.whois n +79991234567\n.whois qz @username'
+            )
+            return
+        
+        action = args[0]
+        target = ' '.join(args[1:])
+        
+        await show_connection_animation(message, action)
+        
+        if action == 'ip':
+            result = format_ip_result(target)
+        elif action == 'n':
+            result = format_phone_result(target)
+        elif action == 'qz':
+            result = format_username_result(target)
+        else:
+            await message.answer('❌ Неверный тип. Используйте: ip, n, qz')
+            return
+        
+        await message.answer(result)
+        return
+    
+    # Админ команды
+    if not is_admin(user_id):
+        logger.warning(f'⛔ Не-админ {user_id} пытался использовать .{cmd}')
+        return
+    
+    if cmd == 'ban':
+        await handle_ban(message, args)
+        return
+    
+    if cmd == 'unban':
+        await handle_unban(message, args)
+        return
+    
+    if cmd == 'chkban':
+        await handle_chkban(message, args)
+        return
+    
+    if cmd == 'logs':
+        await handle_logs(message, args)
+        return
+    
+    if cmd == 'idlist':
+        await handle_idlist(message)
+        return
+    
+    if cmd == 'key':
+        await handle_key(message)
+        return
+    
+    if cmd == 'tex':
+        await handle_tex(message, args)
+        return
+    
+    await message.answer(f'❌ Неизвестная команда: {cmd}')
+
+# ─── ВВОД ДАННЫХ ───
+
+async def handle_user_input(message: Message):
+    """Обработка ввода данных после выбора функции"""
+    user_id = message.from_user.id
+    state = user_states.get(user_id, {})
+    
+    if not state.get('waiting_input'):
+        return
+    
+    action = state.get('action')
+    await delete_message(message)
+    
+    await log_command(user_id, message.from_user.username, f'[ВВОД] {message.text}')
+    
+    await show_connection_animation(message, action)
+    
+    if action == 'ip':
+        result = format_ip_result(message.text)
+    elif action == 'phone':
+        result = format_phone_result(message.text)
+    else:
+        result = format_username_result(message.text)
+    
+    await message.answer(result)
+    user_states[user_id] = {}
+
+# ─── ОБРАБОТКА КНОПОК ───
+
+@dp.callback_query()
+async def handle_callback(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    
+    logger.info(f'🔘 [КНОПКА] {callback.data} от {user_id}')
+    
+    await callback.answer()
+    
+    # Проверка бана
+    ban = await is_banned(user_id)
+    if ban:
+        await callback.message.edit_text('⛔ Вы заблокированы в боте!')
+        return
+    
+    action = callback.data
+    action_names = {'ip': 'IP', 'phone': 'номера', 'username': 'юзера (@)'}
+    
+    await callback.message.delete()
+    
+    msg = await callback.message.answer(
+        f'Действие выбрано: Whois {action_names[action]}\n'
+        f'Пришлите сюда {"IP:" if action == "ip" else "номер:" if action == "phone" else "@username:"}'
+    )
+    
+    user_states[user_id] = {
+        'waiting_input': True,
+        'action': action,
+        'prompt_id': msg.message_id
+    }
+
+# ─── АДМИН КОМАНДЫ ───
+
+async def handle_ban(message: Message, args: List[str]):
     if len(args) < 3:
-        await update.message.reply_text('❌ Формат: .ban (ID) (ВРЕМЯ) (ПРИЧИНА)\nПримеры:\n.ban 123456789 30m Спам\n.ban 123456789 -1w Навсегда')
+        await message.answer('❌ Формат: .ban (ID) (ВРЕМЯ) (ПРИЧИНА)\nПримеры:\n.ban 123456789 30m Спам\n.ban 123456789 -1w Навсегда')
         return
     
     try:
@@ -407,7 +701,7 @@ async def handle_ban(update, context, args, is_business):
         
         minutes = parse_ban_time(time_str)
         if minutes is None:
-            await update.message.reply_text('❌ Неверный формат времени. Примеры: 30m, 2h, 1h30m, 7d, -1w')
+            await message.answer('❌ Неверный формат времени. Примеры: 30m, 2h, 1h30m, 7d, -1w')
             return
         
         now = datetime.now()
@@ -420,7 +714,7 @@ async def handle_ban(update, context, args, is_business):
                 'duration': time_str,
                 'banned_at': now.isoformat(),
                 'forever': True,
-                'issued_by': update.effective_user.id
+                'issued_by': message.from_user.id
             }
         else:
             unban_at = now + timedelta(minutes=minutes)
@@ -431,7 +725,7 @@ async def handle_ban(update, context, args, is_business):
                 'banned_at': now.isoformat(),
                 'unban_at': unban_at.isoformat(),
                 'forever': False,
-                'issued_by': update.effective_user.id
+                'issued_by': message.from_user.id
             }
         
         bans = [b for b in bans if b['user_id'] != target_id]
@@ -457,21 +751,21 @@ async def handle_ban(update, context, args, is_business):
 🕐 Дата: {moscow_time()}
 ⏳ Бан активен до: {unban_at.strftime('%Y-%m-%d %H:%M:%S')}"""
         
-        await update.message.reply_text(result, parse_mode=ParseMode.HTML)
+        await message.answer(result)
         
         try:
             if minutes == -1:
-                await context.bot.send_message(
-                    chat_id=target_id,
-                    text=f"""⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ НАВСЕГДА
+                await bot.send_message(
+                    target_id,
+                    f"""⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ НАВСЕГДА
 
 📌 Причина: {reason}
 🕐 Дата блокировки: {moscow_time()}"""
                 )
             else:
-                await context.bot.send_message(
-                    chat_id=target_id,
-                    text=f"""⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ
+                await bot.send_message(
+                    target_id,
+                    f"""⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ
 
 📌 Причина: {reason}
 ⏱ Длительность: {time_str}
@@ -483,14 +777,11 @@ async def handle_ban(update, context, args, is_business):
             pass
             
     except ValueError:
-        await update.message.reply_text('❌ Неверный формат ID.')
+        await message.answer('❌ Неверный формат ID.')
 
-async def handle_unban(update, context, args, is_business):
-    if not is_admin(update.effective_user.id):
-        return
-    
+async def handle_unban(message: Message, args: List[str]):
     if len(args) < 2:
-        await update.message.reply_text('❌ Формат: .unban (ID) (ПРИЧИНА)\nПример: .unban 123456789 Ошибка')
+        await message.answer('❌ Формат: .unban (ID) (ПРИЧИНА)\nПример: .unban 123456789 Ошибка')
         return
     
     try:
@@ -501,7 +792,7 @@ async def handle_unban(update, context, args, is_business):
         filtered = [b for b in bans if b['user_id'] != target_id]
         
         if len(filtered) == len(bans):
-            await update.message.reply_text(f'⛔ Данный {target_id} не заблокирован.')
+            await message.answer(f'⛔ Данный {target_id} не заблокирован.')
             return
         
         save_json(FILES['banlist'], filtered)
@@ -515,12 +806,12 @@ async def handle_unban(update, context, args, is_business):
 🕐 Дата: {moscow_time()}
 🔓 Пользователь снова может пользоваться ботом"""
         
-        await update.message.reply_text(result, parse_mode=ParseMode.HTML)
+        await message.answer(result)
         
         try:
-            await context.bot.send_message(
-                chat_id=target_id,
-                text=f"""✅ ВАС РАЗБЛОКИРОВАЛИ
+            await bot.send_message(
+                target_id,
+                f"""✅ ВАС РАЗБЛОКИРОВАЛИ
 
 📌 Причина разблокировки: {reason}
 🕐 Дата: {moscow_time()}
@@ -530,14 +821,11 @@ async def handle_unban(update, context, args, is_business):
             pass
             
     except ValueError:
-        await update.message.reply_text('❌ Неверный формат ID.')
+        await message.answer('❌ Неверный формат ID.')
 
-async def handle_chkban(update, context, args):
-    if not is_admin(update.effective_user.id):
-        return
-    
+async def handle_chkban(message: Message, args: List[str]):
     if len(args) < 1:
-        await update.message.reply_text('❌ Формат: .chkban (ID)')
+        await message.answer('❌ Формат: .chkban (ID)')
         return
     
     try:
@@ -546,7 +834,7 @@ async def handle_chkban(update, context, args):
         ban = next((b for b in bans if b['user_id'] == target_id), None)
         
         if not ban:
-            await update.message.reply_text(f'⛔ Данный {target_id} не заблокирован.')
+            await message.answer(f'⛔ Данный {target_id} не заблокирован.')
             return
         
         if ban.get('forever', False):
@@ -558,7 +846,7 @@ async def handle_chkban(update, context, args):
             now = datetime.now()
             unban_at = datetime.fromisoformat(ban['unban_at'])
             if unban_at < now:
-                await update.message.reply_text(f'⛔ Данный {target_id} не заблокирован.')
+                await message.answer(f'⛔ Данный {target_id} не заблокирован.')
                 return
             remaining = int((unban_at - now).total_seconds() // 60)
             hours = remaining // 60
@@ -569,17 +857,14 @@ async def handle_chkban(update, context, args):
 🕐Дата снятия бана: {unban_at.strftime('%Y-%m-%d %H:%M:%S')}
 🔓Осталось до окончания: {hours}ч {minutes}м"""
         
-        await update.message.reply_text(result, parse_mode=ParseMode.HTML)
+        await message.answer(result)
         
     except ValueError:
-        await update.message.reply_text('❌ Неверный формат ID.')
+        await message.answer('❌ Неверный формат ID.')
 
-async def handle_logs(update, context, args):
-    if not is_admin(update.effective_user.id):
-        return
-    
+async def handle_logs(message: Message, args: List[str]):
     if len(args) < 2:
-        await update.message.reply_text('❌ Формат: .logs (ID) (количество)\nПример: .logs 123456789 10')
+        await message.answer('❌ Формат: .logs (ID) (количество)\nПример: .logs 123456789 10')
         return
     
     try:
@@ -590,7 +875,7 @@ async def handle_logs(update, context, args):
         user_logs = logs.get(str(target_id), [])[-limit:][::-1]
         
         if not user_logs:
-            await update.message.reply_text('📭 Логи не найдены для данного ID.')
+            await message.answer('📭 Логи не найдены для данного ID.')
             return
         
         text = f'📋 Логи пользователя <code>{target_id}</code> (последние {len(user_logs)})\n\n'
@@ -600,21 +885,18 @@ async def handle_logs(update, context, args):
         if len(text) > 4096:
             chunks = [text[i:i+4096] for i in range(0, len(text), 4096)]
             for chunk in chunks:
-                await update.message.reply_text(chunk, parse_mode=ParseMode.HTML)
+                await message.answer(chunk)
         else:
-            await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+            await message.answer(text)
             
     except ValueError:
-        await update.message.reply_text('❌ Неверный формат ID или количества.')
+        await message.answer('❌ Неверный формат ID или количества.')
 
-async def handle_idlist(update, context):
-    if not is_admin(update.effective_user.id):
-        return
-    
+async def handle_idlist(message: Message):
     users = load_json(FILES['idlist'])
     
     if not users:
-        await update.message.reply_text('📭 Список ID пуст.')
+        await message.answer('📭 Список ID пуст.')
         return
     
     text = f'📋 Список пользователей ({len(users)})\n\n'
@@ -625,14 +907,11 @@ async def handle_idlist(update, context):
     if len(text) > 4096:
         chunks = [text[i:i+4096] for i in range(0, len(text), 4096)]
         for chunk in chunks:
-            await update.message.reply_text(chunk, parse_mode=ParseMode.HTML)
+            await message.answer(chunk)
     else:
-        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+        await message.answer(text)
 
-async def handle_key(update, context):
-    if not is_admin(update.effective_user.id):
-        return
-    
+async def handle_key(message: Message):
     try:
         chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
         suffix = ''.join(random.choices(chars, k=5))
@@ -657,32 +936,29 @@ async def handle_key(update, context):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 📌 Используйте этот ключ для входа в админ-панель сайта"""
         
-        await update.message.reply_text(result, parse_mode=ParseMode.HTML)
+        await message.answer(result)
         
     except Exception as e:
-        await update.message.reply_text('❌ Ошибка при генерации ключа.')
+        await message.answer('❌ Ошибка при генерации ключа.')
 
-async def handle_tex(update, context, args):
+async def handle_tex(message: Message, args: List[str]):
     global maintenance_mode, maintenance_until
     
-    if not is_admin(update.effective_user.id):
-        return
-    
     if len(args) < 1:
-        await update.message.reply_text('❌ Формат: .tex on (минуты) или .tex off')
+        await message.answer('❌ Формат: .tex on (минуты) или .tex off')
         return
     
     sub_cmd = args[0].lower()
     
     if sub_cmd == 'on':
         if len(args) < 2:
-            await update.message.reply_text('❌ Укажите время: .tex on 30')
+            await message.answer('❌ Укажите время: .tex on 30')
             return
         
         try:
             minutes = int(args[1])
             if minutes <= 0:
-                await update.message.reply_text('❌ Время должно быть больше 0.')
+                await message.answer('❌ Время должно быть больше 0.')
                 return
             
             until = datetime.now() + timedelta(minutes=minutes)
@@ -690,346 +966,33 @@ async def handle_tex(update, context, args):
             maintenance_mode = True
             maintenance_until = until.isoformat()
             
-            await update.message.reply_text(
+            await message.answer(
                 f'✅ ТЕХ-РАБОТЫ УСПЕШНО ВКЛЮЧЕНЫ\n'
                 f'🕐 Время работ: до {until.strftime("%Y-%m-%d %H:%M:%S")}'
             )
         except ValueError:
-            await update.message.reply_text('❌ Неверный формат времени. Укажите минуты.')
+            await message.answer('❌ Неверный формат времени. Укажите минуты.')
             
     elif sub_cmd == 'off':
         await set_tech_works(False, None)
         maintenance_mode = False
         maintenance_until = None
-        await update.message.reply_text('✅ ТЕХ-РАБОТЫ УСПЕШНО ВЫКЛЮЧЕНЫ')
+        await message.answer('✅ ТЕХ-РАБОТЫ УСПЕШНО ВЫКЛЮЧЕНЫ')
         
     else:
-        await update.message.reply_text('❌ Используйте: .tex on (минуты) или .tex off')
+        await message.answer('❌ Используйте: .tex on (минуты) или .tex off')
 
-# ─── Проверка бана (без спама) ───
+# ─── ЗАПУСК ───
 
-async def check_ban_silent(update, context):
-    user_id = update.effective_user.id
-    ban = await is_banned(user_id)
-    if ban:
-        if user_id not in banned_notified:
-            banned_notified.add(user_id)
-            if ban.get('forever', False):
-                await update.message.reply_text(
-                    f'⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ НАВСЕГДА\n\n'
-                    f'📌 Причина: {ban["reason"]}\n'
-                    f'🕐 Дата блокировки: {datetime.fromisoformat(ban["banned_at"]).strftime("%Y-%m-%d %H:%M:%S")}'
-                )
-            else:
-                await update.message.reply_text(
-                    f'⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ\n\n'
-                    f'📌 Причина: {ban["reason"]}\n'
-                    f'⏱ Длительность: {ban.get("duration", "неизвестно")}\n'
-                    f'🕐 Дата блокировки: {datetime.fromisoformat(ban["banned_at"]).strftime("%Y-%m-%d %H:%M:%S")}\n'
-                    f'⏳ Разблокировка: {datetime.fromisoformat(ban["unban_at"]).strftime("%Y-%m-%d %H:%M:%S")}'
-                )
-        return True
-    return False
-
-async def check_maintenance(update):
-    global maintenance_mode, maintenance_until
-    if is_admin(update.effective_user.id):
-        return False
-    if maintenance_mode:
-        if maintenance_until and datetime.now().isoformat() > maintenance_until:
-            maintenance_mode = False
-            return False
-        return True
-    return False
-
-# ─── Команды ЛС (/start, /menu и т.д.) ───
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    username = update.effective_user.username or str(user_id)
-    first_name = update.effective_user.first_name
-    
-    if await check_ban_silent(update, context):
-        return
-    
-    if await check_maintenance(update):
-        await update.message.reply_text(
-            f'🛠️ БОТ НА ТЕХНИЧЕСКИХ РАБОТАХ\n\n'
-            f'🕐 ВРЕМЯ: до {datetime.fromisoformat(maintenance_until).strftime("%Y-%m-%d %H:%M:%S")}'
-        )
-        return
-    
-    await save_user(user_id, username, first_name)
-    await log_command(user_id, username, '/start')
-    
-    await update.message.reply_text(
-        '👋 Привет! Я бот для пробива информации.\n\n'
-        'Выбери действие:',
-        reply_markup=MENU_KEYBOARD
-    )
-
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    
-    ban = await is_banned(user_id)
-    if ban:
-        if user_id not in banned_notified:
-            banned_notified.add(user_id)
-            if ban.get('forever', False):
-                await query.edit_message_text(
-                    f'⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ НАВСЕГДА\n\n'
-                    f'📌 Причина: {ban["reason"]}\n'
-                    f'🕐 Дата блокировки: {datetime.fromisoformat(ban["banned_at"]).strftime("%Y-%m-%d %H:%M:%S")}'
-                )
-            else:
-                await query.edit_message_text(
-                    f'⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ\n\n'
-                    f'📌 Причина: {ban["reason"]}\n'
-                    f'⏱ Длительность: {ban.get("duration", "неизвестно")}\n'
-                    f'🕐 Дата блокировки: {datetime.fromisoformat(ban["banned_at"]).strftime("%Y-%m-%d %H:%M:%S")}\n'
-                    f'⏳ Разблокировка: {datetime.fromisoformat(ban["unban_at"]).strftime("%Y-%m-%d %H:%M:%S")}'
-                )
-        return
-    
-    if await check_maintenance(update):
-        await query.edit_message_text(
-            f'🛠️ БОТ НА ТЕХНИЧЕСКИХ РАБОТАХ\n\n'
-            f'🕐 ВРЕМЯ: до {datetime.fromisoformat(maintenance_until).strftime("%Y-%m-%d %H:%M:%S")}'
-        )
-        return
-    
-    action = query.data
-    context.user_data['action'] = action
-    
-    action_names = {'ip': 'IP', 'phone': 'номера', 'username': 'юзера (@)'}
-    
-    await query.delete_message()
-    msg = await query.message.reply_text(
-        f'Действие выбрано: Whois {action_names[action]}\n'
-        f'Пришлите сюда {"IP:" if action == "ip" else "номер:" if action == "phone" else "@username:"}'
-    )
-    context.user_data['waiting_input'] = True
-    context.user_data['input_message_id'] = msg.message_id
-
-async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    username = update.effective_user.username or str(user_id)
-    
-    if await check_ban_silent(update, context):
-        return
-    
-    if await check_maintenance(update):
-        await update.message.reply_text(
-            f'🛠️ БОТ НА ТЕХНИЧЕСКИХ РАБОТАХ\n\n'
-            f'🕐 ВРЕМЯ: до {datetime.fromisoformat(maintenance_until).strftime("%Y-%m-%d %H:%M:%S")}'
-        )
-        return
-    
-    if not context.user_data.get('waiting_input'):
-        return
-    
-    await save_user(user_id, username, update.effective_user.first_name)
-    await log_command(user_id, username, update.message.text)
-    
-    action = context.user_data.get('action')
-    input_text = update.message.text.strip()
-    
-    await update.message.delete()
-    try:
-        await context.bot.delete_message(
-            chat_id=update.effective_chat.id,
-            message_id=context.user_data['input_message_id']
-        )
-    except:
-        pass
-    
-    loading_msg = await update.message.reply_text('⏳ Подключение...')
-    await show_connection_animation(context, update.effective_chat.id, loading_msg.message_id, action)
-    
-    if action == 'ip':
-        result = format_ip_result(input_text)
-    elif action == 'phone':
-        result = format_phone_result(input_text)
-    else:
-        result = format_username_result(input_text)
-    
-    await loading_msg.delete()
-    await update.message.reply_text(result, parse_mode=ParseMode.HTML)
-    
-    context.user_data['waiting_input'] = False
-
-# ─── ОБРАБОТКА БИЗНЕС-ЧАТОВ (Business API) ───
-# Это для чатов с СОБЕСЕДНИКАМИ, а не с ботом!
-
-async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка команд в бизнес-чатах (чаты с собеседниками)"""
-    if not update.message or not update.message.text:
-        return
-    
-    user_id = update.effective_user.id
-    username = update.effective_user.username or str(user_id)
-    text = update.message.text.strip()
-    chat_id = update.effective_chat.id
-    message_id = update.message.message_id
-    
-    # Только команды с точкой
-    if not text.startswith('.'):
-        return
-    
-    logger.info(f'📩 [Business API] Команда от {user_id} в чате {chat_id}: {text}')
-    
-    # Проверка бана
-    ban = await is_banned(user_id)
-    if ban:
-        if user_id not in banned_notified:
-            banned_notified.add(user_id)
-            if ban.get('forever', False):
-                await update.message.reply_text(
-                    f'⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ НАВСЕГДА\n\n'
-                    f'📌 Причина: {ban["reason"]}\n'
-                    f'🕐 Дата блокировки: {datetime.fromisoformat(ban["banned_at"]).strftime("%Y-%m-%d %H:%M:%S")}'
-                )
-            else:
-                await update.message.reply_text(
-                    f'⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ\n\n'
-                    f'📌 Причина: {ban["reason"]}\n'
-                    f'⏱ Длительность: {ban.get("duration", "неизвестно")}\n'
-                    f'🕐 Дата блокировки: {datetime.fromisoformat(ban["banned_at"]).strftime("%Y-%m-%d %H:%M:%S")}\n'
-                    f'⏳ Разблокировка: {datetime.fromisoformat(ban["unban_at"]).strftime("%Y-%m-%d %H:%M:%S")}'
-                )
-        # Удаляем команду из чата
-        await try_delete_message(context, chat_id, message_id)
-        return
-    
-    # Проверка тех-работ
-    if await check_maintenance(update) and not is_admin(user_id):
-        await try_delete_message(context, chat_id, message_id)
-        await update.message.reply_text(
-            f'🛠️ БОТ НА ТЕХНИЧЕСКИХ РАБОТАХ\n\n'
-            f'🕐 ВРЕМЯ: до {datetime.fromisoformat(maintenance_until).strftime("%Y-%m-%d %H:%M:%S")}'
-        )
-        return
-    
-    # Сохраняем данные
-    await save_user(user_id, username, update.effective_user.first_name)
-    await log_command(user_id, username, text)
-    
-    # Разбираем команду
-    parts = text[1:].split()
-    if not parts:
-        return
-    
-    command = parts[0].lower()
-    args = parts[1:] if len(parts) > 1 else []
-    
-    # УДАЛЯЕМ КОМАНДУ ИЗ ЧАТА (Business API)
-    await try_delete_message(context, chat_id, message_id)
-    
-    # ─── Обработка команд ───
-    
-    # .help
-    if command == 'help':
-        await update.message.reply_text(HELP_TEXT)
-        return
-    
-    # .whois
-    if command == 'whois':
-        if len(args) < 2:
-            await update.message.reply_text(
-                '❌ Укажите тип и данные для пробива.\n\n'
-                'Примеры:\n.whois ip 8.8.8.8\n.whois n +79991234567\n.whois qz @username'
-            )
-            return
-        
-        action = args[0]
-        target = ' '.join(args[1:])
-        
-        loading_msg = await update.message.reply_text('⏳ Подключение...')
-        
-        if action == 'ip':
-            await show_connection_animation(context, chat_id, loading_msg.message_id, 'ip')
-            result = format_ip_result(target)
-        elif action == 'n':
-            await show_connection_animation(context, chat_id, loading_msg.message_id, 'phone')
-            result = format_phone_result(target)
-        elif action == 'qz':
-            await show_connection_animation(context, chat_id, loading_msg.message_id, 'username')
-            result = format_username_result(target)
-        else:
-            await loading_msg.delete()
-            await update.message.reply_text('❌ Неверный тип. Используйте: ip, n, qz')
-            return
-        
-        await loading_msg.delete()
-        await update.message.reply_text(result, parse_mode=ParseMode.HTML)
-        return
-    
-    # ─── АДМИН КОМАНДЫ ───
-    if not is_admin(user_id):
-        logger.warning(f'⛔ [Business API] Не-админ {user_id} пытался использовать команду: {command}')
-        return
-    
-    if command == 'ban':
-        await handle_ban(update, context, args, True)
-        return
-    
-    if command == 'unban':
-        await handle_unban(update, context, args, True)
-        return
-    
-    if command == 'chkban':
-        await handle_chkban(update, context, args)
-        return
-    
-    if command == 'logs':
-        await handle_logs(update, context, args)
-        return
-    
-    if command == 'idlist':
-        await handle_idlist(update, context)
-        return
-    
-    if command == 'key':
-        await handle_key(update, context)
-        return
-    
-    if command == 'tex':
-        await handle_tex(update, context, args)
-        return
-    
-    # Если команда не распознана
-    await update.message.reply_text(f'❌ Неизвестная команда: {command}\nИспользуйте .help для справки.')
-
-# ─── Запуск ───
-
-def main():
+async def main():
     init_files()
-    
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    # ЛС команды (/start, /menu, /help и т.д.) - только в личке с ботом
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button_callback))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_input))
-    
-    # БИЗНЕС-КОМАНДЫ (.whois, .ban, .help и т.д.) - В ЛЮБЫХ ЧАТАХ (с собеседниками, группы)
-    # НЕ фильтруем по типу чата, чтобы работало везде, где есть бот
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.ChatType.PRIVATE, handle_business_message))
-    
-    # Дополнительно: если в личке с ботом приходит .команда - тоже обрабатываем как бизнес
-    # Это для случаев, когда кто-то использует . вместо / в личке с ботом
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_business_message))
-    
-    logger.info('✅ Бот запущен!')
+    logger.info('🚀 Бот запускается...')
     logger.info(f'👑 Админ ID: {ADMIN_ID}')
-    logger.info('📌 Для Business API используйте .команды в чатах с собеседниками')
-    logger.info('📌 Для лички используйте /команды')
-    logger.info('📌 Пример бизнес-команды: .whois ip 8.8.8.8')
+    logger.info('📌 /команды — в личке с ботом')
+    logger.info('📌 .команды — в любых чатах (Business API)')
+    logger.info('📌 Пример: .whois ip 8.8.8.8')
     
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    await dp.start_polling(bot)
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())
