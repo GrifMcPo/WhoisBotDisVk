@@ -13,7 +13,6 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram import F
-from supabase import create_client, Client
 import aiohttp
 
 logging.basicConfig(level=logging.INFO)
@@ -23,9 +22,9 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 
-# ===== SUPABASE =====
+# ===== SUPABASE (HTTP КЛИЕНТ) =====
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://doidpainkowqiquvrzpg.supabase.co")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")  # ИМЯ СОВПАДАЕТ С СЕКРЕТОМ!
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
 
 if not BOT_TOKEN:
     print("❌ Токен не найден!")
@@ -42,9 +41,78 @@ print(f"🔗 Supabase URL: {SUPABASE_URL}")
 print(f"🔑 Ключ: {SUPABASE_KEY[:10]}...")
 print("=" * 60)
 
+# ===== HTTP КЛИЕНТ ДЛЯ SUPABASE (БЕЗ БИБЛИОТЕКИ) =====
+class SupabaseClient:
+    def __init__(self, url, key):
+        self.url = url.rstrip('/')
+        self.key = key
+        self.headers = {
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "Prefer": "return=representation"
+        }
+    
+    def table(self, name):
+        return SupabaseTable(self, name)
+
+class SupabaseTable:
+    def __init__(self, client, name):
+        self.client = client
+        self.name = name
+        self._select = "*"
+        self._filters = []
+        self._eq_filters = {}
+        self._order = None
+        self._limit = None
+        self._delete_mode = False
+    
+    def select(self, columns):
+        self._select = columns
+        return self
+    
+    def eq(self, column, value):
+        self._eq_filters[column] = value
+        return self
+    
+    def neq(self, column, value):
+        self._filters.append(f"{column}=neq.{value}")
+        return self
+    
+    def order(self, column, desc=False):
+        self._order = f"{column}.{'desc' if desc else 'asc'}"
+        return self
+    
+    def limit(self, count):
+        self._limit = count
+        return self
+    
+    def execute(self):
+        url = f"{self.client.url}/rest/v1/{self.name}"
+        params = {"select": self._select}
+        
+        for col, val in self._eq_filters.items():
+            params[col] = f"eq.{val}"
+        
+        if self._filters:
+            params["and"] = ",".join(self._filters)
+        if self._order:
+            params["order"] = self._order
+        if self._limit:
+            params["limit"] = self._limit
+        
+        response = requests.get(url, headers=self.client.headers, params=params)
+        return type('obj', (object,), {'data': response.json()})()
+    
+    def insert(self, data):
+        url = f"{self.client.url}/rest/v1/{self.name}"
+        response = requests.post(url, headers=self.client.headers, json=data)
+        return type('obj', (object,), {'data': response.json() if response.text else []})()
+
+supabase = SupabaseClient(SUPABASE_URL, SUPABASE_KEY)
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 business_connections = {}
 blocked_notified = {}
@@ -581,28 +649,8 @@ def get_main_keyboard():
         [InlineKeyboardButton(text="👤 ПРОБИВ ЮЗЕРА", callback_data="probe_user")],
     ])
 
-# ========== BUSINESS CONNECTION ==========
-@dp.business_connection()
-async def handle_business_connection(connection: types.BusinessConnection):
-    if connection.user:
-        user_id = connection.user.id
-        connection_id = connection.id
-        username = connection.user.username or "Нет юзернейма"
-        
-        if not is_admin(user_id):
-            return
-        
-        business_connections[str(user_id)] = connection_id
-        
-        logger.info(f"🔗 BUSINESS CONNECTION: @{username} (ID: {user_id})")
-        
-        await bot.send_message(
-            chat_id=user_id,
-            text=f"✅ БОТ ПОДКЛЮЧЕН К БИЗНЕС-АККАУНТУ!\n\n🆔 ID: {user_id}\n📌 Команды работают в чатах с собеседниками!\n🔥 Введите .help для списка команд"
-        )
-
 # ========== BUSINESS MESSAGE ==========
-@dp.business_message()
+@dp.message(F.business_connection_id.is_not(None))
 async def handle_business_message(message: types.Message):
     try:
         user_id = message.from_user.id
