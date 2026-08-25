@@ -10,7 +10,7 @@ from typing import Optional, List
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery, BusinessMessage
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.client.default import DefaultBotProperties
 
@@ -20,10 +20,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-# ДОПОЛНИТЕЛЬНЫЙ ЛОГГЕР
-msg_logger = logging.getLogger('messages')
-msg_logger.setLevel(logging.INFO)
 
 # Получение токенов
 BOT_TOKEN = os.getenv('BOT_TOKEN')
@@ -392,26 +388,48 @@ async def delete_message(target, message_id):
     except Exception as e:
         logger.error(f'❌ Не удалось удалить: {e}')
 
-# ─── ОБРАБОТЧИК ЛС СООБЩЕНИЙ ───
+# ─── УНИВЕРСАЛЬНЫЙ ОБРАБОТЧИК СООБЩЕНИЙ ───
 
-@dp.message(F.text & F.chat.type.in_({'private'}))
-async def handle_dm_message(message: Message):
-    """Обработка личных сообщений боту (/команды)"""
+@dp.message()
+async def handle_all_messages(message: Message):
+    """
+    УНИВЕРСАЛЬНЫЙ ОБРАБОТЧИК ВСЕХ СООБЩЕНИЙ
+    Определяет тип чата и обрабатывает соответственно
+    """
     user_id = message.from_user.id
+    username = message.from_user.username or "без юзера"
     text = message.text or ""
+    chat_id = message.chat.id
+    chat_type = message.chat.type
+    message_id = message.message_id
     
-    # Только команды с /
-    if not text.startswith('/'):
-        return
+    # Проверяем, является ли сообщение бизнес-сообщением
+    is_business = hasattr(message, 'business_connection_id') and message.business_connection_id is not None
     
-    logger.info(f'📩 [DM MESSAGE] от {user_id}: "{text[:100]}"')
+    # МОЩНЫЙ ЛОГ
+    logger.info(f'📩 [ВХОДЯЩЕЕ] от {user_id} (@{username}) в чат {chat_id} ({chat_type}){" [BUSINESS]" if is_business else ""}: "{text[:100]}"')
     
-    # Проверка бана
+    # Проверка на бан
     ban = await is_banned(user_id)
     if ban:
         if user_id not in banned_notified:
             banned_notified.add(user_id)
-            await message.answer('⛔ ВЫ ЗАБЛОКИРОВАНЫ В БОТЕ!')
+            if ban.get('forever', False):
+                await message.answer(
+                    f'⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ НАВСЕГДА\n\n'
+                    f'📌 Причина: {ban["reason"]}\n'
+                    f'🕐 Дата блокировки: {datetime.fromisoformat(ban["banned_at"]).strftime("%Y-%m-%d %H:%M:%S")}'
+                )
+            else:
+                await message.answer(
+                    f'⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ\n\n'
+                    f'📌 Причина: {ban["reason"]}\n'
+                    f'⏱ Длительность: {ban.get("duration", "неизвестно")}\n'
+                    f'🕐 Дата блокировки: {datetime.fromisoformat(ban["banned_at"]).strftime("%Y-%m-%d %H:%M:%S")}\n'
+                    f'⏳ Разблокировка: {datetime.fromisoformat(ban["unban_at"]).strftime("%Y-%m-%d %H:%M:%S")}'
+                )
+        if text.startswith('.') or text.startswith('/'):
+            await delete_message(message, message_id)
         return
     
     # Тех работы
@@ -420,14 +438,45 @@ async def handle_dm_message(message: Message):
         if maintenance_until and datetime.now().isoformat() > maintenance_until:
             maintenance_mode = False
         else:
+            if text.startswith('.') or text.startswith('/'):
+                await delete_message(message, message_id)
             await message.answer(
                 f'🛠️ БОТ НА ТЕХНИЧЕСКИХ РАБОТАХ\n\n'
                 f'🕐 ВРЕМЯ: до {datetime.fromisoformat(maintenance_until).strftime("%Y-%m-%d %H:%M:%S")}'
             )
             return
     
-    await save_user(user_id, message.from_user.username, message.from_user.first_name)
-    await log_command(user_id, message.from_user.username, text)
+    # Сохраняем пользователя
+    await save_user(user_id, username, message.from_user.first_name)
+    
+    # Если это ввод данных (не команда)
+    if user_id in user_states and user_states[user_id].get('waiting_input'):
+        if not text.startswith('.') and not text.startswith('/'):
+            await handle_user_input(message)
+            return
+    
+    # ─── ОБРАБОТКА КОМАНД ───
+    
+    # Бизнес-команды (с точкой) - работают в ЛЮБЫХ чатах
+    if text.startswith('.'):
+        await handle_business_command(message, text)
+        return
+    
+    # ЛС команды (с /) - только в личке с ботом
+    if text.startswith('/') and chat_type == 'private':
+        await handle_dm_command(message, text)
+        return
+
+# ─── ОБРАБОТЧИК ЛС КОМАНД ───
+
+async def handle_dm_command(message: Message, text: str):
+    """Обработка команд в личке (/команды)"""
+    user_id = message.from_user.id
+    username = message.from_user.username
+    
+    logger.info(f'🔄 [DM CMD] /{text.split()[0]} от {user_id}')
+    
+    await log_command(user_id, username, text)
     
     parts = text[1:].split()
     if not parts:
@@ -493,69 +542,21 @@ async def handle_dm_message(message: Message):
     
     await message.answer(f'❌ Неизвестная команда: {cmd}')
 
-# ─── ОБРАБОТЧИК BUSINESS MESSAGE ───
+# ─── ОБРАБОТЧИК БИЗНЕС-КОМАНД ───
 
-@dp.business_message()
-async def handle_business_message(message: BusinessMessage):
-    """
-    ОСНОВНОЙ ОБРАБОТЧИК ДЛЯ BUSINESS API!
-    Срабатывает на ВСЕ сообщения в чатах с собеседниками.
-    """
+async def handle_business_command(message: Message, text: str):
+    """Обработка бизнес-команд (.команды) - работают в ЛЮБЫХ чатах!"""
     user_id = message.from_user.id
-    username = message.from_user.username or "без юзера"
-    text = message.text or ""
+    username = message.from_user.username
     chat_id = message.chat.id
     message_id = message.message_id
     
-    # МОЩНЫЙ ЛОГ - видно каждое бизнес-сообщение
-    logger.info(f'📩 [BUSINESS MESSAGE] от {user_id} (@{username}) в чат {chat_id}: "{text[:100]}"')
+    logger.info(f'🔄 [BUSINESS CMD] .{text.split()[0]} от {user_id} в чате {chat_id}')
     
-    # Проверка на бан
-    ban = await is_banned(user_id)
-    if ban:
-        if user_id not in banned_notified:
-            banned_notified.add(user_id)
-            if ban.get('forever', False):
-                await message.answer(
-                    f'⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ НАВСЕГДА\n\n'
-                    f'📌 Причина: {ban["reason"]}\n'
-                    f'🕐 Дата блокировки: {datetime.fromisoformat(ban["banned_at"]).strftime("%Y-%m-%d %H:%M:%S")}'
-                )
-            else:
-                await message.answer(
-                    f'⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ\n\n'
-                    f'📌 Причина: {ban["reason"]}\n'
-                    f'⏱ Длительность: {ban.get("duration", "неизвестно")}\n'
-                    f'🕐 Дата блокировки: {datetime.fromisoformat(ban["banned_at"]).strftime("%Y-%m-%d %H:%M:%S")}\n'
-                    f'⏳ Разблокировка: {datetime.fromisoformat(ban["unban_at"]).strftime("%Y-%m-%d %H:%M:%S")}'
-                )
-        if text.startswith('.'):
-            await delete_message(message, message_id)
-        return
-    
-    # Тех работы
-    global maintenance_mode, maintenance_until
-    if maintenance_mode and not is_admin(user_id):
-        if maintenance_until and datetime.now().isoformat() > maintenance_until:
-            maintenance_mode = False
-        else:
-            if text.startswith('.'):
-                await delete_message(message, message_id)
-            await message.answer(
-                f'🛠️ БОТ НА ТЕХНИЧЕСКИХ РАБОТАХ\n\n'
-                f'🕐 ВРЕМЯ: до {datetime.fromisoformat(maintenance_until).strftime("%Y-%m-%d %H:%M:%S")}'
-            )
-            return
-    
-    # Сохраняем пользователя
-    await save_user(user_id, username, message.from_user.first_name)
-    
-    # Обрабатываем только команды с точкой
-    if not text.startswith('.'):
-        return
+    # Удаляем команду
+    await delete_message(message, message_id)
     
     await log_command(user_id, username, text)
-    await delete_message(message, message_id)
     
     parts = text[1:].split()
     if not parts:
@@ -563,8 +564,6 @@ async def handle_business_message(message: BusinessMessage):
     
     cmd = parts[0].lower()
     args = parts[1:] if len(parts) > 1 else []
-    
-    logger.info(f'🔄 [BUSINESS CMD] .{cmd} от {user_id} в чате {chat_id}')
     
     # .help
     if cmd == 'help':
@@ -635,7 +634,6 @@ async def handle_business_message(message: BusinessMessage):
 
 # ─── ОБРАБОТЧИК ВВОДА ДАННЫХ ───
 
-@dp.message(F.text & ~F.text.startswith('/') & ~F.text.startswith('.'))
 async def handle_user_input(message: Message):
     user_id = message.from_user.id
     state = user_states.get(user_id, {})
