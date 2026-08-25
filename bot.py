@@ -238,6 +238,19 @@ def save_idlist(user_id, username):
     except:
         pass
 
+def get_logs_for_user(user_id, count=10):
+    try:
+        if not os.path.exists(LOGS_FILE):
+            return []
+        
+        with open(LOGS_FILE, 'r', encoding='utf-8') as f:
+            all_logs = json.load(f)
+        
+        filtered = [log for log in all_logs if log.get("user_id") == user_id]
+        return filtered[-count:] if count else filtered
+    except:
+        return []
+
 # ========== КЛЮЧИ ==========
 def load_keys():
     try:
@@ -470,7 +483,9 @@ async def handle_business_message(message: types.Message):
                 ".whois qz [@username] — пробив Telegram-юзернейма\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 "⚡ ДОПОЛНИТЕЛЬНО\n\n"
-                ".help — справка\n\n"
+                ".help — справка\n"
+                ".idlist — список пользователей\n"
+                ".logs (ID) (кол-во) — логи пользователя\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 "🛡️ НАКАЗАНИЯ (PLUS)\n\n"
                 ".ban (I) (T) (R) — Выдать бан\n"
@@ -481,6 +496,68 @@ async def handle_business_message(message: types.Message):
                 "📌 /команды — в личке с ботом",
                 connection_id
             )
+            return
+        
+        # .idlist
+        if text.lower() == '.idlist':
+            try:
+                with open(IDLIST_FILE, 'r', encoding='utf-8') as f:
+                    idlist = json.load(f)
+                
+                if not idlist:
+                    await send_to_business_chat(chat_id, "📊 Список пользователей пуст", connection_id)
+                    return
+                
+                result = "👥 СПИСОК ПОЛЬЗОВАТЕЛЕЙ\n\n"
+                for item in idlist:
+                    username = item.get("username", "Нет")
+                    uid = item.get("id", "?")
+                    result += f"🆔 {uid} → @{username}\n"
+                
+                if len(result) > 4000:
+                    parts = [result[i:i+4000] for i in range(0, len(result), 4000)]
+                    for part in parts:
+                        await send_to_business_chat(chat_id, part, connection_id)
+                else:
+                    await send_to_business_chat(chat_id, result, connection_id)
+            except:
+                await send_to_business_chat(chat_id, "❌ Ошибка загрузки списка", connection_id)
+            return
+        
+        # .logs
+        if text.lower().startswith('.logs'):
+            parts = text.split(maxsplit=2)
+            if len(parts) < 2:
+                await send_to_business_chat(chat_id, "❌ .logs [ID] [кол-во]\nПример: .logs 123456789 5", connection_id)
+                return
+            
+            try:
+                target_id = int(parts[1])
+                count = int(parts[2]) if len(parts) > 2 else 10
+                if count > 50:
+                    count = 50
+            except:
+                await send_to_business_chat(chat_id, "❌ Неверный формат ID или количества", connection_id)
+                return
+            
+            logs = get_logs_for_user(target_id, count)
+            
+            if not logs:
+                await send_to_business_chat(chat_id, f"📊 Логов для {target_id} не найдено", connection_id)
+                return
+            
+            result = f"📋 ЛОГИ ДЛЯ {target_id} (последние {len(logs)})\n\n"
+            for log in logs:
+                cmd = log.get("command", "?")
+                time = log.get("time", "?")
+                result += f"🕐 {time}\n📝 {cmd}\n\n"
+            
+            if len(result) > 4000:
+                parts = [result[i:i+4000] for i in range(0, len(result), 4000)]
+                for part in parts:
+                    await send_to_business_chat(chat_id, part, connection_id)
+            else:
+                await send_to_business_chat(chat_id, result, connection_id)
             return
         
         # .ban
@@ -495,7 +572,6 @@ async def handle_business_message(message: types.Message):
             reason = parts[3] if len(parts) > 3 else "Без причины"
             
             minutes, time_display = parse_time(time_str)
-            
             add_ban(target_id, reason, user_id, minutes)
             
             await send_to_business_chat(
@@ -712,11 +788,16 @@ async def help_command(message: types.Message):
         "/start — Главное меню\n"
         "/help — Справка\n"
         "/whois — Пробив\n"
+        "/idlist — Список пользователей (админ)\n"
+        "/logs (ID) (кол-во) — Логи пользователя (админ)\n"
         "/ban — Бан (админ)\n"
         "/unban — Разбан (админ)\n"
-        "/key — Получить ключ для сайта\n\n"
+        "/chkban (ID) — Проверить бан (админ)\n"
+        "/key — Получить ключ для сайта (админ)\n\n"
         "🔹 В ЧАТАХ (с .):\n"
         ".help — Справка\n"
+        ".idlist — Список пользователей\n"
+        ".logs (ID) (кол-во) — Логи пользователя\n"
         ".whois ip [IP] — Пробив IP\n"
         ".whois n [номер] — Пробив номера\n"
         ".whois qz [@username] — Пробив юзера\n"
@@ -756,6 +837,78 @@ async def whois_command(message: types.Message):
         reply_markup=keyboard
     )
 
+@dp.message(Command("idlist"))
+async def idlist_command(message: types.Message):
+    user_id = message.from_user.id
+    
+    if not is_admin(user_id):
+        await message.answer("❌ У вас нет прав на эту команду!")
+        return
+    
+    try:
+        with open(IDLIST_FILE, 'r', encoding='utf-8') as f:
+            idlist = json.load(f)
+        
+        if not idlist:
+            await message.answer("📊 Список пользователей пуст")
+            return
+        
+        result = "👥 СПИСОК ПОЛЬЗОВАТЕЛЕЙ\n\n"
+        for item in idlist:
+            username = item.get("username", "Нет")
+            uid = item.get("id", "?")
+            result += f"🆔 {uid} → @{username}\n"
+        
+        if len(result) > 4000:
+            parts = [result[i:i+4000] for i in range(0, len(result), 4000)]
+            for part in parts:
+                await message.answer(part)
+        else:
+            await message.answer(result)
+    except:
+        await message.answer("❌ Ошибка загрузки списка")
+
+@dp.message(Command("logs"))
+async def logs_command(message: types.Message):
+    user_id = message.from_user.id
+    
+    if not is_admin(user_id):
+        await message.answer("❌ У вас нет прав на эту команду!")
+        return
+    
+    args = message.text.split(maxsplit=2)
+    if len(args) < 2:
+        await message.answer("❌ /logs [ID] [кол-во]\nПример: /logs 123456789 5")
+        return
+    
+    try:
+        target_id = int(args[1])
+        count = int(args[2]) if len(args) > 2 else 10
+        if count > 50:
+            count = 50
+    except:
+        await message.answer("❌ Неверный формат ID или количества")
+        return
+    
+    logs = get_logs_for_user(target_id, count)
+    
+    if not logs:
+        await message.answer(f"📊 Логов для {target_id} не найдено")
+        return
+    
+    result = f"📋 ЛОГИ ДЛЯ {target_id} (последние {len(logs)})\n\n"
+    for log in logs:
+        cmd = log.get("command", "?")
+        time = log.get("time", "?")
+        result += f"🕐 {time}\n📝 {cmd}\n\n"
+    
+    if len(result) > 4000:
+        parts = [result[i:i+4000] for i in range(0, len(result), 4000)]
+        for part in parts:
+            await message.answer(part)
+    else:
+        await message.answer(result)
+
 @dp.message(Command("ban"))
 async def ban_command(message: types.Message):
     user_id = message.from_user.id
@@ -774,7 +927,6 @@ async def ban_command(message: types.Message):
     reason = args[3] if len(args) > 3 else "Без причины"
     
     minutes, time_display = parse_time(time_str)
-    
     add_ban(target_id, reason, user_id, minutes)
     
     await message.answer(
@@ -835,6 +987,33 @@ async def unban_command(message: types.Message):
             pass
     else:
         await message.answer(f"❌ Пользователь {target_id} не найден в черном списке")
+
+@dp.message(Command("chkban"))
+async def chkban_command(message: types.Message):
+    user_id = message.from_user.id
+    
+    if not is_admin(user_id):
+        await message.answer("❌ У вас нет прав на эту команду!")
+        return
+    
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("❌ /chkban [ID]")
+        return
+    
+    target_id = args[1]
+    ban_info = get_ban_info(target_id)
+    
+    if ban_info:
+        await message.answer(
+            f"---{target_id}---\n"
+            f"📌 Причина: {ban_info.get('reason', 'Не указана')}\n"
+            f"🕐 Дата выдачи: {ban_info.get('added_at', 'Неизвестно')}\n"
+            f"🕐 Дата снятия: {ban_info.get('expires_at', 'НАВСЕГДА')}\n"
+            f"🔓 Осталось: {ban_info.get('expires_at', 'Навсегда')}"
+        )
+    else:
+        await message.answer(f"⛔ Данный {target_id} не заблокирован.")
 
 @dp.message(Command("key"))
 async def key_command(message: types.Message):
