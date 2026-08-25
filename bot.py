@@ -7,15 +7,14 @@ import re
 import requests
 import ipaddress
 import phonenumbers
-import base64
 from phonenumbers import carrier, geocoder, timezone, number_type
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BusinessConnection
 from aiogram import F
+from supabase import create_client, Client
 import aiohttp
-import asyncio
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -23,36 +22,26 @@ logger = logging.getLogger(__name__)
 # ===== СЕКРЕТЫ =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
-GH_TOKEN = os.getenv("GH_TOKEN", "")
+
+# ===== SUPABASE =====
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://doidpainkowqiquvrzpg.supabase.co")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
 
 if not BOT_TOKEN:
     print("❌ Токен не найден!")
     sys.exit(1)
 
-if not ADMIN_ID:
-    print("❌ ADMIN_ID не найден!")
+if not SUPABASE_KEY:
+    print("❌ SUPABASE_SERVICE_KEY не найден!")
     sys.exit(1)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-
-# ===== ФАЙЛЫ =====
-LOGS_FILE = "data/logs.json"
-BANLIST_FILE = "data/banlist.json"
-IDLIST_FILE = "data/idlist.json"
-KEYS_FILE = "data/keys.json"
-TECH_FILE = "data/tech.json"
-
-# ===== GITHUB API =====
-REPO = "GrifMcPo/WhoisBotDisVk"
-BRANCH = "main"
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 business_connections = {}
 blocked_notified = {}
 processing_commands = {}
-
-# ===== ОЧЕРЕДЬ ДЛЯ ЛОГОВ (ФОНОВАЯ) =====
-log_queue = asyncio.Queue()
 
 def get_msk_time():
     return (datetime.utcnow() + timedelta(hours=3)).strftime('%d.%m.%Y %H:%M:%S')
@@ -75,265 +64,192 @@ def parse_time(time_str):
     
     return total_minutes, f"{total_minutes} минут"
 
-# ========== ФОНОВОЕ СОХРАНЕНИЕ ЛОГОВ ==========
-async def log_worker():
-    """Фоновый процесс для сохранения логов без блокировки бота"""
-    while True:
-        try:
-            log_entry = await log_queue.get()
-            await asyncio.to_thread(save_log_sync, log_entry)
-            log_queue.task_done()
-        except Exception as e:
-            print(f"❌ Ошибка фонового лога: {e}")
+# ========== SUPABASE ФУНКЦИИ ==========
 
-def save_log_sync(log_entry):
-    """Синхронное сохранение лога (для фонового потока)"""
+# --- ЛОГИ ---
+async def save_log_async(log_entry):
     try:
-        logs = []
-        if os.path.exists(LOGS_FILE):
-            try:
-                with open(LOGS_FILE, 'r', encoding='utf-8') as f:
-                    content = f.read().strip()
-                    if content:
-                        logs = json.loads(content)
-                        if not isinstance(logs, list):
-                            logs = []
-            except:
-                logs = []
+        user_id = log_entry.get("user_id")
+        username = log_entry.get("username", "Нет")
+        full_name = log_entry.get("full_name", "Нет")
         
-        logs.append(log_entry)
+        existing = supabase.table("users").select("user_id").eq("user_id", user_id).execute()
+        if not existing.data:
+            supabase.table("users").insert({
+                "user_id": user_id,
+                "username": username,
+                "full_name": full_name,
+                "role": "user"
+            }).execute()
         
-        with open(LOGS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(logs, f, indent=2, ensure_ascii=False)
-        
-        # Сохраняем idlist
-        save_idlist_sync(log_entry.get("user_id"), log_entry.get("username"))
+        supabase.table("logs").insert({
+            "user_id": user_id,
+            "command": log_entry.get("command", ""),
+            "target": log_entry.get("target", ""),
+            "username": username,
+            "time": log_entry.get("time", get_msk_time())
+        }).execute()
         return True
     except Exception as e:
         print(f"❌ Ошибка сохранения лога: {e}")
         return False
 
-def save_idlist_sync(user_id, username):
+def get_logs_for_user(user_id, count=10):
     try:
-        idlist = []
-        if os.path.exists(IDLIST_FILE):
-            try:
-                with open(IDLIST_FILE, 'r', encoding='utf-8') as f:
-                    idlist = json.load(f)
-                    if not isinstance(idlist, list):
-                        idlist = []
-            except:
-                idlist = []
-        
-        for item in idlist:
-            if item.get("id") == user_id:
-                item["username"] = username
-                break
-        else:
-            idlist.append({"id": user_id, "username": username})
-        
-        with open(IDLIST_FILE, 'w', encoding='utf-8') as f:
-            json.dump(idlist, f, indent=2, ensure_ascii=False)
+        result = supabase.table("logs").select("*").eq("user_id", user_id).order("id", desc=True).limit(count).execute()
+        return result.data
     except:
-        pass
+        return []
 
-async def save_log_async(log_entry):
-    """Асинхронное сохранение лога (ставит в очередь)"""
-    await log_queue.put(log_entry)
-
-# ========== GITHUB API (АСИНХРОННЫЙ) ==========
-async def write_to_github_async(file_path, content, message="Update file"):
-    if not GH_TOKEN:
-        return await asyncio.to_thread(save_local_file, file_path, content)
-    
+def get_all_users():
     try:
-        url = f"https://api.github.com/repos/{REPO}/contents/{file_path}"
-        headers = {
-            "Authorization": f"token {GH_TOKEN}",
-            "Accept": "application/vnd.github.v3+json"
-        }
-        
-        sha = None
-        try:
-            response = requests.get(url, headers=headers)
-            if response.status_code == 200:
-                sha = response.json().get("sha")
-        except:
-            pass
-        
-        if isinstance(content, dict) or isinstance(content, list):
-            content_str = json.dumps(content, indent=2, ensure_ascii=False)
-        else:
-            content_str = content
-        
-        content_base64 = base64.b64encode(content_str.encode('utf-8')).decode('utf-8')
-        
-        data = {
-            "message": message,
-            "content": content_base64,
-            "branch": BRANCH
-        }
-        if sha:
-            data["sha"] = sha
-        
-        response = requests.put(url, headers=headers, json=data)
-        
-        if response.status_code in [200, 201]:
-            print(f"✅ Файл {file_path} записан в GitHub")
-            return True
-        else:
-            return await asyncio.to_thread(save_local_file, file_path, content)
-    except Exception as e:
-        print(f"❌ Ошибка записи в GitHub: {e}")
-        return await asyncio.to_thread(save_local_file, file_path, content)
-
-def save_local_file(file_path, content):
-    try:
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        if isinstance(content, dict) or isinstance(content, list):
-            with open(file_path, 'w', encoding='utf-8') as f:
-                json.dump(content, f, indent=2, ensure_ascii=False)
-        else:
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(content)
-        return True
+        result = supabase.table("users").select("user_id, username, full_name, role").order("id", desc=True).execute()
+        return result.data
     except:
-        return False
+        return []
 
-def load_from_github(file_path):
-    if not GH_TOKEN:
-        return None
-    
-    try:
-        url = f"https://api.github.com/repos/{REPO}/contents/{file_path}"
-        headers = {
-            "Authorization": f"token {GH_TOKEN}",
-            "Accept": "application/vnd.github.v3+json"
-        }
-        response = requests.get(url, headers=headers)
-        if response.status_code == 200:
-            data = response.json()
-            content = base64.b64decode(data["content"]).decode('utf-8')
-            return json.loads(content)
-        return None
-    except:
-        return None
-
-# ========== БАНЛИСТ ==========
-def load_banlist():
-    try:
-        data = load_from_github(BANLIST_FILE)
-        if data is not None:
-            return data
-    except:
-        pass
-    
-    try:
-        if os.path.exists(BANLIST_FILE):
-            with open(BANLIST_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        return {}
-    except:
-        return {}
-
-def save_banlist(banlist):
-    if write_to_github_async(BANLIST_FILE, banlist, "Update banlist"):
-        return True
-    return save_local_file(BANLIST_FILE, banlist)
-
+# --- БАНЫ ---
 def add_ban(user_id, reason, admin_id, time_minutes=None):
-    banlist = load_banlist()
     expires_at = None
     if time_minutes:
         expires_at = (datetime.now() + timedelta(minutes=time_minutes)).isoformat()
     
-    banlist[str(user_id)] = {
-        "reason": reason,
-        "added_by": admin_id,
-        "added_at": get_msk_time(),
-        "expires_at": expires_at
-    }
-    save_banlist(banlist)
-    if str(user_id) in blocked_notified:
-        del blocked_notified[str(user_id)]
-    return True
-
-def remove_ban(user_id):
-    banlist = load_banlist()
-    if str(user_id) in banlist:
-        del banlist[str(user_id)]
-        save_banlist(banlist)
+    try:
+        supabase.table("bans").delete().eq("user_id", int(user_id)).execute()
+        supabase.table("bans").insert({
+            "user_id": int(user_id),
+            "reason": reason,
+            "added_by": admin_id,
+            "added_at": get_msk_time(),
+            "expires_at": expires_at
+        }).execute()
         if str(user_id) in blocked_notified:
             del blocked_notified[str(user_id)]
         return True
-    return False
+    except:
+        return False
+
+def remove_ban(user_id):
+    try:
+        supabase.table("bans").delete().eq("user_id", int(user_id)).execute()
+        if str(user_id) in blocked_notified:
+            del blocked_notified[str(user_id)]
+        return True
+    except:
+        return False
 
 def is_banned(user_id):
-    banlist = load_banlist()
-    if str(user_id) not in banlist:
-        return False
-    
-    data = banlist[str(user_id)]
-    if data.get("expires_at"):
-        expires = datetime.fromisoformat(data["expires_at"])
-        if datetime.now() > expires:
-            del banlist[str(user_id)]
-            save_banlist(banlist)
-            if str(user_id) in blocked_notified:
-                del blocked_notified[str(user_id)]
+    try:
+        result = supabase.table("bans").select("*").eq("user_id", int(user_id)).execute()
+        if not result.data:
             return False
-    
-    return True
+        
+        data = result.data[0]
+        if data.get("expires_at"):
+            expires = datetime.fromisoformat(data["expires_at"])
+            if datetime.now() > expires:
+                supabase.table("bans").delete().eq("user_id", int(user_id)).execute()
+                if str(user_id) in blocked_notified:
+                    del blocked_notified[str(user_id)]
+                return False
+        return True
+    except:
+        return False
 
 def get_ban_info(user_id):
-    banlist = load_banlist()
-    data = banlist.get(str(user_id), {})
-    if not data:
-        return None
-    
-    reason = data.get("reason", "Не указана")
-    expires = data.get("expires_at")
-    if expires:
-        expires_dt = datetime.fromisoformat(expires)
-        time_left = expires_dt - datetime.now()
-        hours = time_left.seconds // 3600
-        minutes = (time_left.seconds % 3600) // 60
-        if time_left.days > 0:
-            time_str = f"{time_left.days}д {hours}ч"
-        elif hours > 0:
-            time_str = f"{hours}ч {minutes}м"
+    try:
+        result = supabase.table("bans").select("*").eq("user_id", int(user_id)).execute()
+        if not result.data:
+            return None
+        
+        data = result.data[0]
+        reason = data.get("reason", "Не указана")
+        expires = data.get("expires_at")
+        if expires:
+            expires_dt = datetime.fromisoformat(expires)
+            time_left = expires_dt - datetime.now()
+            hours = time_left.seconds // 3600
+            minutes = (time_left.seconds % 3600) // 60
+            if time_left.days > 0:
+                time_str = f"{time_left.days}д {hours}ч"
+            elif hours > 0:
+                time_str = f"{hours}ч {minutes}м"
+            else:
+                time_str = f"{minutes}м"
+            reason += f" (осталось: {time_str})"
         else:
-            time_str = f"{minutes}м"
-        reason += f" (осталось: {time_str})"
-    else:
-        reason += " (НАВСЕГДА)"
-    
-    return data
+            reason += " (НАВСЕГДА)"
+        
+        return data
+    except:
+        return None
 
-def is_admin(user_id):
-    return user_id == ADMIN_ID
+# --- КЛЮЧИ ---
+def load_keys():
+    try:
+        result = supabase.table("keys").select("*").execute()
+        keys = {}
+        for item in result.data:
+            keys[item["key"]] = {
+                "user_id": item["user_id"],
+                "created_at": item["created_at"],
+                "expires_at": item["expires_at"]
+            }
+        return keys
+    except:
+        return {}
 
-# ========== ТЕХРАБОТЫ ==========
+def save_keys(keys):
+    try:
+        supabase.table("keys").delete().neq("id", 0).execute()
+        for key, data in keys.items():
+            supabase.table("keys").insert({
+                "key": key,
+                "user_id": data["user_id"],
+                "created_at": data["created_at"],
+                "expires_at": data["expires_at"]
+            }).execute()
+        return True
+    except:
+        return False
+
+def generate_key():
+    import string, secrets
+    chars = string.ascii_uppercase + string.digits
+    random_part = ''.join(secrets.choice(chars) for _ in range(5))
+    return f"ADMIN_{random_part}"
+
+def create_session_key():
+    keys = load_keys()
+    key = generate_key()
+    keys[key] = {
+        "user_id": ADMIN_ID,
+        "created_at": get_msk_time(),
+        "expires_at": (datetime.now() + timedelta(hours=10)).isoformat()
+    }
+    save_keys(keys)
+    return key
+
+# --- ТЕХРАБОТЫ ---
 def load_tech():
     try:
-        data = load_from_github(TECH_FILE)
-        if data is not None:
-            return data
-    except:
-        pass
-    
-    try:
-        if os.path.exists(TECH_FILE):
-            with open(TECH_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
+        result = supabase.table("tech").select("*").limit(1).execute()
+        if result.data:
+            return result.data[0]
         return {"active": False, "expires_at": None}
     except:
         return {"active": False, "expires_at": None}
 
 def save_tech(data):
-    if write_to_github_async(TECH_FILE, data, "Update tech mode"):
+    try:
+        supabase.table("tech").delete().neq("id", 0).execute()
+        supabase.table("tech").insert({
+            "active": data.get("active", False),
+            "expires_at": data.get("expires_at")
+        }).execute()
         return True
-    return save_local_file(TECH_FILE, data)
+    except:
+        return False
 
 def is_tech_mode():
     data = load_tech()
@@ -358,61 +274,22 @@ def set_tech_mode(active, expires_at=None):
     data = {"active": active, "expires_at": expires_at}
     save_tech(data)
 
-# ========== КЛЮЧИ ==========
-def load_keys():
+def is_admin(user_id):
     try:
-        data = load_from_github(KEYS_FILE)
-        if data is not None:
-            return data
+        result = supabase.table("users").select("role").eq("user_id", user_id).execute()
+        if result.data and result.data[0].get("role") == "admin":
+            return True
     except:
         pass
-    
-    try:
-        if os.path.exists(KEYS_FILE):
-            with open(KEYS_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        return {}
-    except:
-        return {}
-
-def save_keys(keys):
-    if write_to_github_async(KEYS_FILE, keys, "Update keys"):
-        return True
-    return save_local_file(KEYS_FILE, keys)
-
-def generate_key():
-    import string, secrets
-    chars = string.ascii_uppercase + string.digits
-    random_part = ''.join(secrets.choice(chars) for _ in range(5))
-    return f"ADMIN_{random_part}"
-
-def create_session_key():
-    keys = load_keys()
-    key = generate_key()
-    keys[key] = {
-        "created_at": get_msk_time(),
-        "expires_at": (datetime.now() + timedelta(hours=10)).isoformat()
-    }
-    save_keys(keys)
-    return key
-
-# ========== ЛОГИ ==========
-def get_logs_for_user(user_id, count=10):
-    try:
-        logs = []
-        if os.path.exists(LOGS_FILE):
-            with open(LOGS_FILE, 'r', encoding='utf-8') as f:
-                logs = json.load(f)
-        
-        filtered = [log for log in logs if log.get("user_id") == user_id]
-        return filtered[-count:] if count else filtered
-    except:
-        return []
+    return user_id == ADMIN_ID
 
 # ========== ОСТАНОВКА РАННЕРОВ ==========
 async def stop_runners(target, user_id=None, username=None):
+    GH_TOKEN = os.getenv("GH_TOKEN", "")
     if not GH_TOKEN:
         return "❌ GH_TOKEN не настроен!"
+    
+    REPO = "GrifMcPo/WhoisBotDisVk"
     
     try:
         url = f"https://api.github.com/repos/{REPO}/actions/runs"
@@ -478,7 +355,7 @@ async def stop_runners(target, user_id=None, username=None):
     except Exception as e:
         return f"❌ Ошибка: {str(e)}"
 
-# ========== ПРОБИВ IP (АСИНХРОННЫЙ) ==========
+# ========== ПРОБИВ IP ==========
 async def probe_ip(ip: str):
     results = []
     success_count = 0
@@ -560,9 +437,7 @@ async def probe_phone(phone: str):
     
     return results, success_count, local_data
 
-# ========== ПРОБИВ USERNAME ==========
 async def probe_username(username: str):
-    # Простой пробив по username (имитация)
     return {
         "username": username,
         "id": 123456789,
@@ -570,7 +445,6 @@ async def probe_username(username: str):
         "status": "Активен"
     }
 
-# ========== АНАЛИЗ РЕЗУЛЬТАТОВ IP ==========
 def analyze_ip_results(results):
     final = {"country": "Не определено", "region": "Не определено", "city": "Не определено", 
              "isp": "Не определено", "org": "Не определено", "as": "Не определено", "timezone": "Не определено"}
@@ -791,17 +665,14 @@ async def handle_business_message(message: types.Message):
         
         # .idlist
         if text.lower() == '.idlist':
-            try:
-                idlist = load_from_github(IDLIST_FILE) or []
-                if not idlist:
-                    await send_to_business_chat(chat_id, "📊 Список пользователей пуст", connection_id)
-                    return
-                result = "👥 СПИСОК ПОЛЬЗОВАТЕЛЕЙ\n\n"
-                for item in idlist:
-                    result += f"🆔 {item.get('id', '?')} → @{item.get('username', 'Нет')}\n"
-                await send_to_business_chat(chat_id, result[:4000], connection_id)
-            except Exception as e:
-                await send_to_business_chat(chat_id, f"❌ Ошибка: {e}", connection_id)
+            users = get_all_users()
+            if not users:
+                await send_to_business_chat(chat_id, "📊 Список пользователей пуст", connection_id)
+                return
+            result = "👥 СПИСОК ПОЛЬЗОВАТЕЛЕЙ\n\n"
+            for user in users:
+                result += f"🆔 {user.get('user_id', '?')} → @{user.get('username', 'Нет')}\n"
+            await send_to_business_chat(chat_id, result[:4000], connection_id)
             return
         
         # .logs
@@ -1053,17 +924,14 @@ async def idlist_command(message: types.Message):
     if not is_admin(user_id):
         await message.answer("❌ У вас нет прав!")
         return
-    try:
-        idlist = load_from_github(IDLIST_FILE) or []
-        if not idlist:
-            await message.answer("📊 Список пользователей пуст")
-            return
-        result = "👥 СПИСОК ПОЛЬЗОВАТЕЛЕЙ\n\n"
-        for item in idlist:
-            result += f"🆔 {item.get('id', '?')} → @{item.get('username', 'Нет')}\n"
-        await message.answer(result[:4000])
-    except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
+    users = get_all_users()
+    if not users:
+        await message.answer("📊 Список пользователей пуст")
+        return
+    result = "👥 СПИСОК ПОЛЬЗОВАТЕЛЕЙ\n\n"
+    for user in users:
+        result += f"🆔 {user.get('user_id', '?')} → @{user.get('username', 'Нет')}\n"
+    await message.answer(result[:4000])
 
 @dp.message(Command("logs"))
 async def logs_command(message: types.Message):
@@ -1285,33 +1153,17 @@ async def handle_private_message(message: types.Message):
     
     await message.answer("❓ Неизвестная команда\n\n📌 Введи /help для списка команд")
 
-# ========== ЗАПУСК ФОНОВОГО ЛОГГЕРА ==========
+# ========== ЗАПУСК ==========
 async def main():
     print("=" * 60)
-    print("🔥 БОТ ЗАПУЩЕН!")
+    print("🔥 БОТ ЗАПУЩЕН С SUPABASE!")
     print(f"👤 АДМИН: {ADMIN_ID}")
+    print(f"📁 Supabase: {SUPABASE_URL}")
     print("📌 Команды с / — в личке бота")
     print("📌 Команды с . — в чатах с собеседниками")
     print("=" * 60)
     
     os.makedirs('data', exist_ok=True)
-    
-    for file in [LOGS_FILE, BANLIST_FILE, IDLIST_FILE, KEYS_FILE, TECH_FILE]:
-        if not os.path.exists(file):
-            with open(file, 'w', encoding='utf-8') as f:
-                if file == TECH_FILE:
-                    json.dump({"active": False, "expires_at": None}, f)
-                elif file == IDLIST_FILE:
-                    json.dump([], f)
-                elif file in [BANLIST_FILE, KEYS_FILE]:
-                    json.dump({}, f)
-                else:
-                    json.dump([], f)
-            print(f"✅ Создан файл: {file}")
-    
-    # Запускаем фоновый логгер
-    asyncio.create_task(log_worker())
-    print("✅ Фоновый логгер запущен")
     
     try:
         await dp.start_polling(bot)
