@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 
-# ===== SUPABASE (HTTP КЛИЕНТ БЕЗ БИБЛИОТЕКИ) =====
+# ===== SUPABASE (HTTP КЛИЕНТ) =====
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://doidpainkowqiquvrzpg.supabase.co")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
 
