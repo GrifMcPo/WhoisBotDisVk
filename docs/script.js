@@ -1,5 +1,5 @@
-// ===== ВЕРСИЯ 5.0 =====
-console.log('🚀 Whois Admin v5.0');
+// ===== ВЕРСИЯ 5.1 =====
+console.log('🚀 Whois Admin v5.1');
 
 // ===== КОНФИГ =====
 const GITHUB_RAW = 'https://raw.githubusercontent.com/GrifMcPo/WhoisBotDisVk/main/data';
@@ -8,15 +8,17 @@ const GITHUB_RAW = 'https://raw.githubusercontent.com/GrifMcPo/WhoisBotDisVk/mai
 let sessionActive = false;
 let updateInterval = null;
 
-// ===== ФУНКЦИЯ ЧТЕНИЯ ФАЙЛА ЧЕРЕЗ RAW =====
+// ===== ФУНКЦИЯ ЧТЕНИЯ ФАЙЛА ЧЕРЕЗ RAW (С ОБХОДОМ CORS) =====
 async function readFile(fileName) {
     try {
         const url = `${GITHUB_RAW}/${fileName}?_=${Date.now()}`;
         const res = await fetch(url, {
+            mode: 'cors',
             cache: 'no-cache',
             headers: {
                 'Cache-Control': 'no-cache, no-store, must-revalidate',
-                'Pragma': 'no-cache'
+                'Pragma': 'no-cache',
+                'Accept': 'application/json'
             }
         });
         if (!res.ok) {
@@ -28,15 +30,12 @@ async function readFile(fileName) {
         }
         return await res.json();
     } catch (e) {
-        console.error(`Ошибка чтения ${fileName}:`, e);
+        console.error(`Ошибка чтения ${fileName}:`, e.message);
         return null;
     }
 }
 
-// ===== ФУНКЦИЯ ЗАПИСИ (ПОКА НЕТ) =====
-// Для записи используется бот через GitHub API
-
-// ===== ВХОД (ЧИТАЕТ keys.json) =====
+// ===== ВХОД =====
 async function login() {
     const key = document.getElementById('keyInput').value.trim();
     const errorEl = document.getElementById('loginError');
@@ -59,6 +58,8 @@ async function login() {
             return;
         }
         
+        console.log('🔑 Доступные ключи:', Object.keys(keys));
+        
         if (keys[key]) {
             const expires = new Date(keys[key].expires_at);
             const now = new Date();
@@ -68,10 +69,8 @@ async function login() {
                 document.getElementById('loginPage').style.display = 'none';
                 document.getElementById('adminPage').style.display = 'block';
                 
-                // Загружаем все данные
                 await loadAllData();
                 
-                // Обновление каждые 10 секунд
                 if (updateInterval) clearInterval(updateInterval);
                 updateInterval = setInterval(() => {
                     if (sessionActive) {
@@ -86,7 +85,7 @@ async function login() {
                 errorEl.textContent = '❌ Ключ истёк. Получите новый через /key в боте';
             }
         } else {
-            errorEl.textContent = '❌ Неверный ключ';
+            errorEl.textContent = '❌ Неверный ключ. Попробуйте: ADMIN_8THFK';
         }
     } catch (e) {
         errorEl.textContent = '❌ Ошибка проверки ключа. Проверьте интернет-соединение.';
@@ -125,13 +124,12 @@ function showTab(tab) {
     const target = document.getElementById(`${tab}Tab`);
     if (target) target.style.display = 'block';
     
-    // При переключении вкладки обновляем данные
     if (tab === 'logs') loadLogs();
     if (tab === 'users') loadUsers();
     if (tab === 'bans') loadBans();
 }
 
-// ===== ЗАГРУЗКА ЛОГОВ (читает logs.json) =====
+// ===== ЗАГРУЗКА ЛОГОВ =====
 async function loadLogs() {
     const data = await readFile('logs.json');
     const container = document.getElementById('logsList');
@@ -148,7 +146,7 @@ async function loadLogs() {
     `).join('');
 }
 
-// ===== ЗАГРУЗКА ПОЛЬЗОВАТЕЛЕЙ (читает idlist.json) =====
+// ===== ЗАГРУЗКА ПОЛЬЗОВАТЕЛЕЙ =====
 async function loadUsers() {
     const data = await readFile('idlist.json');
     const container = document.getElementById('usersList');
@@ -165,7 +163,7 @@ async function loadUsers() {
     `).join('');
 }
 
-// ===== ЗАГРУЗКА БАНОВ (читает banlist.json) =====
+// ===== ЗАГРУЗКА БАНОВ =====
 async function loadBans() {
     const data = await readFile('banlist.json');
     const container = document.getElementById('bansList');
@@ -184,7 +182,7 @@ async function loadBans() {
     `).join('');
 }
 
-// ===== ТЕХРАБОТЫ (читает tech.json) =====
+// ===== ТЕХРАБОТЫ =====
 async function loadTechStatus() {
     const data = await readFile('tech.json');
     const status = data && data.active ? 'включены' : 'выключены';
@@ -208,7 +206,5 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
-console.log('🚀 Whois Admin v5.0 loaded');
+console.log('🚀 Whois Admin v5.1 loaded');
 console.log('📁 GITHUB_RAW:', GITHUB_RAW);
-console.log('📂 Файлы: logs.json, idlist.json, banlist.json, keys.json, tech.json');
-console.log('🔄 Обновление данных каждые 10 секунд');
