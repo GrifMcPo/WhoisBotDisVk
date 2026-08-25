@@ -34,12 +34,12 @@ if not ADMIN_ID:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# ===== ФАЙЛЫ (ПИШЕМ В docs/data/) =====
-LOGS_FILE = "docs/data/logs.json"
-BANLIST_FILE = "docs/data/banlist.json"
-IDLIST_FILE = "docs/data/idlist.json"
-KEYS_FILE = "docs/data/keys.json"
-TECH_FILE = "docs/data/tech.json"
+# ===== ФАЙЛЫ (ПИШЕМ В data/) =====
+LOGS_FILE = "data/logs.json"
+BANLIST_FILE = "data/banlist.json"
+IDLIST_FILE = "data/idlist.json"
+KEYS_FILE = "data/keys.json"
+TECH_FILE = "data/tech.json"
 
 # ===== GITHUB API =====
 REPO = "GrifMcPo/WhoisBotDisVk"
@@ -559,102 +559,60 @@ async def handle_business_message(message: types.Message):
         text = message.text.strip()
         await delete_business_message(chat_id, message_id, connection_id)
         
-        # .help
+        # .help (ОДИН РАЗ)
         if text.lower() == '.help':
-            await send_to_business_chat(
-                chat_id,
-                "📚 ДОСТУПНЫЕ КОМАНДЫ\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔍 ПРОБИВ\n\n.whois ip [IP] — пробив IP-адреса\n.whois n [номер] — пробив номера телефона\n.whois qz [@username] — пробив Telegram-юзернейма\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n⚡ ДОПОЛНИТЕЛЬНО\n\n.help — справка\n.idlist — список пользователей\n.logs (ID) (кол-во) — логи пользователя\n.key — получить ключ для сайта\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🛡️ НАКАЗАНИЯ\n\n.ban (ID) (время) (причина) — бан\n.unban (ID) (причина) — разбан\n.chkban (ID) — проверить бан\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🛠️ ТЕХРАБОТЫ\n\n.tex on (время) — включить\n.tex off — выключить\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n📌 .команды — в чатах с собеседниками\n📌 /команды — в личке с ботом",
-                connection_id
-            )
+            await send_to_business_chat(chat_id, HELP_TEXT, connection_id)
             return
         
-        # .idlist
+        # .idlist (ОДИН РАЗ)
         if text.lower() == '.idlist':
             try:
-                idlist = []
-                try:
-                    data = load_from_github(IDLIST_FILE)
-                    if data is not None:
-                        idlist = data
-                except:
-                    pass
-                
+                idlist = load_from_github(IDLIST_FILE) or []
                 if not idlist:
                     await send_to_business_chat(chat_id, "📊 Список пользователей пуст", connection_id)
                     return
-                
                 result = "👥 СПИСОК ПОЛЬЗОВАТЕЛЕЙ\n\n"
                 for item in idlist:
-                    username = item.get("username", "Нет")
-                    uid = item.get("id", "?")
-                    result += f"🆔 {uid} → @{username}\n"
-                
-                if len(result) > 4000:
-                    parts = [result[i:i+4000] for i in range(0, len(result), 4000)]
-                    for part in parts:
-                        await send_to_business_chat(chat_id, part, connection_id)
-                else:
-                    await send_to_business_chat(chat_id, result, connection_id)
+                    result += f"🆔 {item.get('id', '?')} → @{item.get('username', 'Нет')}\n"
+                await send_to_business_chat(chat_id, result[:4000], connection_id)
             except Exception as e:
                 await send_to_business_chat(chat_id, f"❌ Ошибка: {e}", connection_id)
             return
         
-        # .logs
+        # .logs (ОДИН РАЗ)
         if text.lower().startswith('.logs'):
             parts = text.split(maxsplit=2)
             if len(parts) < 2:
-                await send_to_business_chat(chat_id, "❌ .logs [ID] [кол-во]\nПример: .logs 123456789 5", connection_id)
+                await send_to_business_chat(chat_id, "❌ .logs [ID] [кол-во]", connection_id)
                 return
-            
             try:
                 target_id = int(parts[1])
-                count = int(parts[2]) if len(parts) > 2 else 10
-                if count > 50:
-                    count = 50
+                count = min(int(parts[2]) if len(parts) > 2 else 10, 50)
+                logs = get_logs_for_user(target_id, count)
+                if not logs:
+                    await send_to_business_chat(chat_id, f"📊 Логов для {target_id} нет", connection_id)
+                    return
+                result = f"📋 ЛОГИ ДЛЯ {target_id} (последние {len(logs)})\n\n"
+                for log in logs:
+                    result += f"🕐 {log.get('time', '?')}\n📝 {log.get('command', '?')}\n\n"
+                await send_to_business_chat(chat_id, result[:4000], connection_id)
             except:
                 await send_to_business_chat(chat_id, "❌ Неверный формат", connection_id)
-                return
-            
-            logs = get_logs_for_user(target_id, count)
-            
-            if not logs:
-                await send_to_business_chat(chat_id, f"📊 Логов для {target_id} не найдено", connection_id)
-                return
-            
-            result = f"📋 ЛОГИ ДЛЯ {target_id} (последние {len(logs)})\n\n"
-            for log in logs:
-                cmd = log.get("command", "?")
-                time = log.get("time", "?")
-                result += f"🕐 {time}\n📝 {cmd}\n\n"
-            
-            if len(result) > 4000:
-                parts = [result[i:i+4000] for i in range(0, len(result), 4000)]
-                for part in parts:
-                    await send_to_business_chat(chat_id, part, connection_id)
-            else:
-                await send_to_business_chat(chat_id, result, connection_id)
             return
         
-        # .ban
+        # .ban (ОДИН РАЗ)
         if text.lower().startswith('.ban'):
             parts = text.split(maxsplit=3)
             if len(parts) < 3:
-                await send_to_business_chat(chat_id, "❌ .ban [ID] [время] [причина]\nПример: .ban 123456789 1h Спам", connection_id)
+                await send_to_business_chat(chat_id, "❌ .ban [ID] [время] [причина]", connection_id)
                 return
-            
             target_id = parts[1]
             time_str = parts[2]
             reason = parts[3] if len(parts) > 3 else "Без причины"
-            
             minutes, time_display = parse_time(time_str)
             add_ban(target_id, reason, user_id, minutes)
-            
-            await send_to_business_chat(
-                chat_id,
-                f"✅ ПОЛЬЗОВАТЕЛЬ ЗАБАНЕН\n\n🆔 ID: {target_id}\n📌 Причина: {reason}\n⏱ Время: {time_display}\n🕐 Дата: {get_msk_time()}",
-                connection_id
-            )
-            
+            await send_to_business_chat(chat_id, f"✅ ПОЛЬЗОВАТЕЛЬ ЗАБАНЕН\n\n🆔 ID: {target_id}\n📌 Причина: {reason}\n⏱ Время: {time_display}\n🕐 Дата: {get_msk_time()}", connection_id)
+            # Одно сообщение в ЛС
             try:
                 ban_msg = f"⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ\n\n📌 Причина: {reason}\n⏱ Длительность: {time_display}\n🕐 Дата блокировки: {get_msk_time()}"
                 if minutes:
@@ -662,139 +620,73 @@ async def handle_business_message(message: types.Message):
                 await bot.send_message(chat_id=int(target_id), text=ban_msg)
             except:
                 pass
-            
-            save_log({
-                "command": f".ban {target_id}",
-                "user_id": user_id,
-                "username": message.from_user.username or "Нет",
-                "target": target_id,
-                "reason": reason,
-                "time": get_msk_time()
-            })
+            save_log({"command": f".ban {target_id}", "user_id": user_id, "username": message.from_user.username or "Нет", "target": target_id, "reason": reason, "time": get_msk_time()})
             return
         
-        # .unban
+        # .unban (ОДИН РАЗ)
         if text.lower().startswith('.unban'):
             parts = text.split(maxsplit=2)
             if len(parts) < 2:
                 await send_to_business_chat(chat_id, "❌ .unban [ID] [причина]", connection_id)
                 return
-            
             target_id = parts[1]
             reason = parts[2] if len(parts) > 2 else "Без причины"
-            
             if remove_ban(target_id):
-                await send_to_business_chat(
-                    chat_id,
-                    f"✅ ПОЛЬЗОВАТЕЛЬ РАЗБАНЕН\n\n🆔 ID: {target_id}\n📌 Причина разбана: {reason}\n🕐 Дата: {get_msk_time()}\n🔓 Пользователь снова может пользоваться ботом",
-                    connection_id
-                )
+                await send_to_business_chat(chat_id, f"✅ ПОЛЬЗОВАТЕЛЬ РАЗБАНЕН\n\n🆔 ID: {target_id}\n📌 Причина: {reason}\n🕐 Дата: {get_msk_time()}", connection_id)
                 try:
-                    await bot.send_message(
-                        chat_id=int(target_id),
-                        text=f"✅ ВАС РАЗБЛОКИРОВАЛИ\n\n📌 Причина: {reason}\n🕐 Дата: {get_msk_time()}\n🔓 Теперь вы снова можете пользоваться ботом"
-                    )
+                    await bot.send_message(chat_id=int(target_id), text=f"✅ ВАС РАЗБЛОКИРОВАЛИ\n\n📌 Причина: {reason}\n🕐 Дата: {get_msk_time()}\n🔓 Теперь вы снова можете пользоваться ботом")
                 except:
                     pass
             else:
                 await send_to_business_chat(chat_id, f"❌ Пользователь {target_id} не найден в черном списке", connection_id)
             return
         
-        # .chkban
-        if text.lower().startswith('.chkban'):
-            parts = text.split(maxsplit=1)
-            if len(parts) < 2:
-                await send_to_business_chat(chat_id, "❌ .chkban [ID]", connection_id)
-                return
-            
-            target_id = parts[1]
-            ban_info = get_ban_info(target_id)
-            
-            if ban_info:
-                await send_to_business_chat(
-                    chat_id,
-                    f"---{target_id}---\n📌 Причина: {ban_info.get('reason', 'Не указана')}\n🕐 Дата выдачи: {ban_info.get('added_at', 'Неизвестно')}\n🕐 Дата снятия: {ban_info.get('expires_at', 'НАВСЕГДА')}\n🔓 Осталось: {ban_info.get('expires_at', 'Навсегда')}",
-                    connection_id
-                )
-            else:
-                await send_to_business_chat(chat_id, f"⛔ Данный {target_id} не заблокирован.", connection_id)
-            return
-        
-        # .key
+        # .key (ОДИН РАЗ)
         if text.lower() == '.key':
             key = create_session_key()
-            await send_to_business_chat(
-                chat_id,
-                f"🔑 Ваш ключ для сайта:\n\n`{key}`\n\n⏱ Действует 10 часов\n🌐 Сайт: https://grifmcpo.github.io/WhoisBotDisVk/",
-                connection_id
-            )
+            await send_to_business_chat(chat_id, f"🔑 Ваш ключ:\n\n`{key}`\n\n⏱ Действует 10 часов", connection_id)
             return
         
-        # .tex on
+        # .tex on/off (ОДИН РАЗ)
         if text.lower().startswith('.tex on'):
             parts = text.split(maxsplit=2)
             if len(parts) < 3:
-                await send_to_business_chat(chat_id, "❌ .tex on [время]\nПример: .tex on 1h", connection_id)
+                await send_to_business_chat(chat_id, "❌ .tex on [время]", connection_id)
                 return
-            
-            time_str = parts[2]
-            minutes, time_display = parse_time(time_str)
+            minutes, _ = parse_time(parts[2])
             expires_at = (datetime.now() + timedelta(minutes=minutes)).isoformat()
-            
             set_tech_mode(True, expires_at)
-            
-            await send_to_business_chat(
-                chat_id,
-                f"✅ ТЕХ-РАБОТЫ УСПЕШНО ВКЛЮЧЕНЫ\n🕐 Время работ: {get_msk_time()}\n⏳ Окончание: {(datetime.now() + timedelta(minutes=minutes)).strftime('%d.%m.%Y %H:%M')}",
-                connection_id
-            )
+            await send_to_business_chat(chat_id, f"✅ ТЕХ-РАБОТЫ ВКЛЮЧЕНЫ\n🕐 Окончание: {(datetime.now() + timedelta(minutes=minutes)).strftime('%d.%m.%Y %H:%M')}", connection_id)
             return
         
-        # .tex off
         if text.lower() == '.tex off':
             set_tech_mode(False, None)
-            await send_to_business_chat(
-                chat_id,
-                "✅ ТЕХ-РАБОТЫ УСПЕШНО ВЫКЛЮЧЕНЫ",
-                connection_id
-            )
+            await send_to_business_chat(chat_id, "✅ ТЕХ-РАБОТЫ ВЫКЛЮЧЕНЫ", connection_id)
             return
         
-        # .whois
+        # .whois (ОДИН РАЗ)
         if text.lower().startswith('.whois'):
             parts = text.split(maxsplit=2)
             if len(parts) < 3:
                 await send_to_business_chat(chat_id, "❌ .whois ip [IP] или .whois n [номер] или .whois qz [@username]", connection_id)
                 return
-            
             command_type = parts[1].lower()
             target = parts[2]
-            
             loading = await show_animation(chat_id, connection_id)
             await asyncio.sleep(1)
-            await edit_business_message(
-                chat_id,
-                loading.message_id,
-                f"✅ РЕЗУЛЬТАТ ПРОБИВА\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🌐 {command_type.upper()}: {target}\n📊 Использовано серверов: 20/20\n🛡️ Доверенность: 95%\n━━━━━━━━━━━━━━━━━━━━━━━━━━",
-                connection_id
-            )
-            
-            save_log({
-                "command": f".whois {command_type} {target}",
-                "user_id": user_id,
-                "username": message.from_user.username or "Нет",
-                "target": target,
-                "time": get_msk_time()
-            })
+            await edit_business_message(chat_id, loading.message_id, f"✅ РЕЗУЛЬТАТ ПРОБИВА\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🌐 {command_type.upper()}: {target}\n📊 Использовано серверов: 20/20\n🛡️ Доверенность: 95%\n━━━━━━━━━━━━━━━━━━━━━━━━━━", connection_id)
+            save_log({"command": f".whois {command_type} {target}", "user_id": user_id, "username": message.from_user.username or "Нет", "target": target, "time": get_msk_time()})
             return
         
     except Exception as e:
         logger.error(f"❌ Ошибка бизнес-сообщения: {e}")
 
 # ========== КОМАНДЫ В ЛИЧКЕ ==========
+# /start — ТОЛЬКО ОДИН РАЗ
 @dp.message(Command("start"))
 async def start(message: types.Message):
     user_id = message.from_user.id
+    logger.info(f"📩 /start от {user_id}")
     
     if is_banned(user_id):
         if str(user_id) not in blocked_notified:
@@ -809,22 +701,15 @@ async def start(message: types.Message):
         await message.answer(f"🛠️ БОТ НА ТЕХНИЧЕСКИХ РАБОТАХ\n\n🕐 ВРЕМЯ: {tech_info.get('expires_at', 'Неизвестно')}")
         return
     
-    save_log({
-        "command": "/start",
-        "user_id": user_id,
-        "username": message.from_user.username or "Нет",
-        "time": get_msk_time()
-    })
-    
-    await message.answer(
-        "🔥 ДОБРО ПОЖАЛОВАТЬ В СИСТЕМУ!\n\nВыберите действие:",
-        reply_markup=get_main_keyboard()
-    )
+    save_log({"command": "/start", "user_id": user_id, "username": message.from_user.username or "Нет", "time": get_msk_time()})
+    await message.answer("🔥 ДОБРО ПОЖАЛОВАТЬ!\n\nВыберите действие:", reply_markup=get_main_keyboard())
+
+# /help — ТОЛЬКО ОДИН РАЗ
+HELP_TEXT = "📚 СПИСОК КОМАНД\n\n🔹 В ЛИЧКЕ (с /):\n/start — Главное меню\n/help — Справка\n/whois — Пробив\n/idlist — Пользователи (админ)\n/logs (ID) — Логи (админ)\n/ban — Бан (админ)\n/unban — Разбан (админ)\n/key — Ключ для сайта (админ)\n\n🔹 В ЧАТАХ (с .):\n.help — Справка\n.idlist — Пользователи\n.logs (ID) — Логи\n.whois ip [IP] — Пробив IP\n.whois n [номер] — Пробив номера\n.whois qz [@username] — Пробив юзера\n.ban [ID] [время] [причина] — Бан\n.unban [ID] [причина] — Разбан\n.key — Ключ\n.tex on/off — Техработы"
 
 @dp.message(Command("help"))
 async def help_command(message: types.Message):
     user_id = message.from_user.id
-    
     if is_banned(user_id):
         if str(user_id) not in blocked_notified:
             ban_info = get_ban_info(user_id)
@@ -832,38 +717,12 @@ async def help_command(message: types.Message):
             await message.answer(f"⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ!\n\n📌 Причина: {reason}")
             blocked_notified[str(user_id)] = True
         return
-    
-    await message.answer(
-        "📚 СПИСОК КОМАНД\n\n"
-        "🔹 В ЛИЧКЕ БОТА (с /):\n"
-        "/start — Главное меню\n"
-        "/help — Справка\n"
-        "/whois — Пробив\n"
-        "/idlist — Список пользователей (админ)\n"
-        "/logs (ID) (кол-во) — Логи пользователя (админ)\n"
-        "/ban — Бан (админ)\n"
-        "/unban — Разбан (админ)\n"
-        "/chkban (ID) — Проверить бан (админ)\n"
-        "/key — Ключ для сайта (админ)\n\n"
-        "🔹 В ЧАТАХ (с .):\n"
-        ".help — Справка\n"
-        ".idlist — Список пользователей\n"
-        ".logs (ID) (кол-во) — Логи пользователя\n"
-        ".whois ip [IP] — Пробив IP\n"
-        ".whois n [номер] — Пробив номера\n"
-        ".whois qz [@username] — Пробив юзера\n"
-        ".ban [ID] [время] [причина] — Бан\n"
-        ".unban [ID] [причина] — Разбан\n"
-        ".chkban [ID] — Проверить бан\n"
-        ".key — Получить ключ\n"
-        ".tex on [время] — Включить техработы\n"
-        ".tex off — Выключить техработы"
-    )
+    await message.answer(HELP_TEXT)
 
+# /whois — ТОЛЬКО ОДИН РАЗ
 @dp.message(Command("whois"))
 async def whois_command(message: types.Message):
     user_id = message.from_user.id
-    
     if is_banned(user_id):
         if str(user_id) not in blocked_notified:
             ban_info = get_ban_info(user_id)
@@ -871,118 +730,73 @@ async def whois_command(message: types.Message):
             await message.answer(f"⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ!\n\n📌 Причина: {reason}")
             blocked_notified[str(user_id)] = True
         return
-    
     if is_tech_mode() and not is_admin(user_id):
         tech_info = get_tech_info()
         await message.answer(f"🛠️ БОТ НА ТЕХНИЧЕСКИХ РАБОТАХ\n\n🕐 ВРЕМЯ: {tech_info.get('expires_at', 'Неизвестно')}")
         return
-    
-    await message.answer(
-        "🔍 Выберите тип пробива:",
-        reply_markup=get_main_keyboard()
-    )
+    await message.answer("🔍 Выберите тип пробива:", reply_markup=get_main_keyboard())
 
+# /idlist — ТОЛЬКО ОДИН РАЗ
 @dp.message(Command("idlist"))
 async def idlist_command(message: types.Message):
     user_id = message.from_user.id
-    
     if not is_admin(user_id):
-        await message.answer("❌ У вас нет прав на эту команду!")
+        await message.answer("❌ У вас нет прав!")
         return
-    
     try:
-        idlist = []
-        try:
-            data = load_from_github(IDLIST_FILE)
-            if data is not None:
-                idlist = data
-        except:
-            pass
-        
+        idlist = load_from_github(IDLIST_FILE) or []
         if not idlist:
             await message.answer("📊 Список пользователей пуст")
             return
-        
         result = "👥 СПИСОК ПОЛЬЗОВАТЕЛЕЙ\n\n"
         for item in idlist:
-            username = item.get("username", "Нет")
-            uid = item.get("id", "?")
-            result += f"🆔 {uid} → @{username}\n"
-        
-        if len(result) > 4000:
-            parts = [result[i:i+4000] for i in range(0, len(result), 4000)]
-            for part in parts:
-                await message.answer(part)
-        else:
-            await message.answer(result)
+            result += f"🆔 {item.get('id', '?')} → @{item.get('username', 'Нет')}\n"
+        await message.answer(result[:4000])
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
+# /logs — ТОЛЬКО ОДИН РАЗ
 @dp.message(Command("logs"))
 async def logs_command(message: types.Message):
     user_id = message.from_user.id
-    
     if not is_admin(user_id):
-        await message.answer("❌ У вас нет прав на эту команду!")
+        await message.answer("❌ У вас нет прав!")
         return
-    
     args = message.text.split(maxsplit=2)
     if len(args) < 2:
-        await message.answer("❌ /logs [ID] [кол-во]\nПример: /logs 123456789 5")
+        await message.answer("❌ /logs [ID] [кол-во]")
         return
-    
     try:
         target_id = int(args[1])
-        count = int(args[2]) if len(args) > 2 else 10
-        if count > 50:
-            count = 50
+        count = min(int(args[2]) if len(args) > 2 else 10, 50)
+        logs = get_logs_for_user(target_id, count)
+        if not logs:
+            await message.answer(f"📊 Логов для {target_id} нет")
+            return
+        result = f"📋 ЛОГИ ДЛЯ {target_id} (последние {len(logs)})\n\n"
+        for log in logs:
+            result += f"🕐 {log.get('time', '?')}\n📝 {log.get('command', '?')}\n\n"
+        await message.answer(result[:4000])
     except:
         await message.answer("❌ Неверный формат")
-        return
-    
-    logs = get_logs_for_user(target_id, count)
-    
-    if not logs:
-        await message.answer(f"📊 Логов для {target_id} не найдено")
-        return
-    
-    result = f"📋 ЛОГИ ДЛЯ {target_id} (последние {len(logs)})\n\n"
-    for log in logs:
-        cmd = log.get("command", "?")
-        time = log.get("time", "?")
-        result += f"🕐 {time}\n📝 {cmd}\n\n"
-    
-    if len(result) > 4000:
-        parts = [result[i:i+4000] for i in range(0, len(result), 4000)]
-        for part in parts:
-            await message.answer(part)
-    else:
-        await message.answer(result)
 
+# /ban — ТОЛЬКО ОДИН РАЗ
 @dp.message(Command("ban"))
 async def ban_command(message: types.Message):
     user_id = message.from_user.id
-    
     if not is_admin(user_id):
-        await message.answer("❌ У вас нет прав на бан!")
+        await message.answer("❌ У вас нет прав!")
         return
-    
     args = message.text.split(maxsplit=3)
     if len(args) < 3:
-        await message.answer("❌ /ban [ID] [время] [причина]\nПример: /ban 123456789 1h Спам")
+        await message.answer("❌ /ban [ID] [время] [причина]")
         return
-    
     target_id = args[1]
     time_str = args[2]
     reason = args[3] if len(args) > 3 else "Без причины"
-    
     minutes, time_display = parse_time(time_str)
     add_ban(target_id, reason, user_id, minutes)
-    
-    await message.answer(
-        f"✅ ПОЛЬЗОВАТЕЛЬ ЗАБАНЕН\n\n🆔 ID: {target_id}\n📌 Причина: {reason}\n⏱ Время: {time_display}\n🕐 Дата: {get_msk_time()}"
-    )
-    
+    await message.answer(f"✅ ПОЛЬЗОВАТЕЛЬ ЗАБАНЕН\n\n🆔 ID: {target_id}\n📌 Причина: {reason}\n⏱ Время: {time_display}\n🕐 Дата: {get_msk_time()}")
     try:
         ban_msg = f"⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ\n\n📌 Причина: {reason}\n⏱ Длительность: {time_display}\n🕐 Дата блокировки: {get_msk_time()}"
         if minutes:
@@ -990,104 +804,75 @@ async def ban_command(message: types.Message):
         await bot.send_message(chat_id=int(target_id), text=ban_msg)
     except:
         pass
-    
-    save_log({
-        "command": f"/ban {target_id}",
-        "user_id": user_id,
-        "username": message.from_user.username or "Нет",
-        "target": target_id,
-        "reason": reason,
-        "time": get_msk_time()
-    })
+    save_log({"command": f"/ban {target_id}", "user_id": user_id, "username": message.from_user.username or "Нет", "target": target_id, "reason": reason, "time": get_msk_time()})
 
+# /unban — ТОЛЬКО ОДИН РАЗ
 @dp.message(Command("unban"))
 async def unban_command(message: types.Message):
     user_id = message.from_user.id
-    
     if not is_admin(user_id):
-        await message.answer("❌ У вас нет прав на разбан!")
+        await message.answer("❌ У вас нет прав!")
         return
-    
     args = message.text.split(maxsplit=2)
     if len(args) < 2:
         await message.answer("❌ /unban [ID] [причина]")
         return
-    
     target_id = args[1]
     reason = args[2] if len(args) > 2 else "Без причины"
-    
     if remove_ban(target_id):
-        await message.answer(
-            f"✅ ПОЛЬЗОВАТЕЛЬ РАЗБАНЕН\n\n🆔 ID: {target_id}\n📌 Причина разбана: {reason}\n🕐 Дата: {get_msk_time()}\n🔓 Пользователь снова может пользоваться ботом"
-        )
+        await message.answer(f"✅ ПОЛЬЗОВАТЕЛЬ РАЗБАНЕН\n\n🆔 ID: {target_id}\n📌 Причина: {reason}\n🕐 Дата: {get_msk_time()}")
         try:
-            await bot.send_message(
-                chat_id=int(target_id),
-                text=f"✅ ВАС РАЗБЛОКИРОВАЛИ\n\n📌 Причина: {reason}\n🕐 Дата: {get_msk_time()}\n🔓 Теперь вы снова можете пользоваться ботом"
-            )
+            await bot.send_message(chat_id=int(target_id), text=f"✅ ВАС РАЗБЛОКИРОВАЛИ\n\n📌 Причина: {reason}\n🕐 Дата: {get_msk_time()}\n🔓 Теперь вы снова можете пользоваться ботом")
         except:
             pass
     else:
         await message.answer(f"❌ Пользователь {target_id} не найден в черном списке")
 
+# /key — ТОЛЬКО ОДИН РАЗ
+@dp.message(Command("key"))
+async def key_command(message: types.Message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        await message.answer("❌ У вас нет прав!")
+        return
+    key = create_session_key()
+    await message.answer(f"🔑 Ваш ключ:\n\n`{key}`\n\n⏱ Действует 10 часов")
+
+# /chkban — ТОЛЬКО ОДИН РАЗ
 @dp.message(Command("chkban"))
 async def chkban_command(message: types.Message):
     user_id = message.from_user.id
-    
     if not is_admin(user_id):
-        await message.answer("❌ У вас нет прав на эту команду!")
+        await message.answer("❌ У вас нет прав!")
         return
-    
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
         await message.answer("❌ /chkban [ID]")
         return
-    
     target_id = args[1]
     ban_info = get_ban_info(target_id)
-    
     if ban_info:
-        await message.answer(
-            f"---{target_id}---\n📌 Причина: {ban_info.get('reason', 'Не указана')}\n🕐 Дата выдачи: {ban_info.get('added_at', 'Неизвестно')}\n🕐 Дата снятия: {ban_info.get('expires_at', 'НАВСЕГДА')}\n🔓 Осталось: {ban_info.get('expires_at', 'Навсегда')}"
-        )
+        await message.answer(f"---{target_id}---\n📌 Причина: {ban_info.get('reason', 'Не указана')}\n🕐 Дата выдачи: {ban_info.get('added_at', 'Неизвестно')}\n🕐 Дата снятия: {ban_info.get('expires_at', 'НАВСЕГДА')}")
     else:
-        await message.answer(f"⛔ Данный {target_id} не заблокирован.")
+        await message.answer(f"⛔ {target_id} не заблокирован.")
 
-@dp.message(Command("key"))
-async def key_command(message: types.Message):
-    user_id = message.from_user.id
-    
-    if not is_admin(user_id):
-        await message.answer("❌ У вас нет прав на получение ключа!")
-        return
-    
-    key = create_session_key()
-    await message.answer(
-        f"🔑 Ваш ключ для сайта:\n\n`{key}`\n\n⏱ Действует 10 часов\n🌐 Сайт: https://grifmcpo.github.io/WhoisBotDisVk/"
-    )
-
+# /tex — ТОЛЬКО ОДИН РАЗ
 @dp.message(Command("tex"))
 async def tex_command(message: types.Message):
     user_id = message.from_user.id
-    
     if not is_admin(user_id):
         await message.answer("❌ У вас нет прав!")
         return
-    
     args = message.text.split(maxsplit=2)
     if len(args) < 2:
         await message.answer("❌ /tex on [время] или /tex off")
         return
-    
     action = args[1].lower()
-    
     if action == "on":
         if len(args) < 3:
-            await message.answer("❌ /tex on [время]\nПример: /tex on 1h")
+            await message.answer("❌ /tex on [время]")
             return
-        
-        time_str = args[2]
-        minutes, time_display = parse_time(time_str)
+        minutes, _ = parse_time(args[2])
         expires_at = (datetime.now() + timedelta(minutes=minutes)).isoformat()
         set_tech_mode(True, expires_at)
         await message.answer(f"✅ ТЕХ-РАБОТЫ ВКЛЮЧЕНЫ\n🕐 Окончание: {(datetime.now() + timedelta(minutes=minutes)).strftime('%d.%m.%Y %H:%M')}")
@@ -1118,17 +903,15 @@ async def handle_callback(callback: types.CallbackQuery):
         return
     
     data = callback.data
-    
     if data == "probe_ip":
         await callback.message.answer("🌐 ВВЕДИТЕ IP\n📌 Пример: 8.8.8.8")
-        await callback.answer()
     elif data == "probe_phone":
         await callback.message.answer("📱 ВВЕДИТЕ НОМЕР\n📌 Пример: 89001234567")
-        await callback.answer()
     elif data == "probe_user":
         await callback.message.answer("👤 ВВЕДИТЕ @USERNAME\n📌 Пример: @username")
-        await callback.answer()
+    await callback.answer()
 
+# ========== ЛИЧНЫЕ СООБЩЕНИЯ ==========
 @dp.message()
 async def handle_private_message(message: types.Message):
     user_id = message.from_user.id
@@ -1155,61 +938,29 @@ async def handle_private_message(message: types.Message):
         return
     
     if text.startswith('.'):
-        await message.answer("❌ Команды с . работают только в чатах с собеседниками!\n📌 В личке используй команды с /")
+        await message.answer("❌ Команды с . — только в чатах с собеседниками!\n📌 В личке используй /help")
         return
     
     # Пробив по IP
     if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', text):
         loading = await show_animation(message)
         await asyncio.sleep(1)
-        await edit_normal_message(
-            message.chat.id,
-            loading.message_id,
-            f"✅ РЕЗУЛЬТАТ ПРОБИВА IP\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🌐 IP-адрес: {text}\n🌍 Город: Москва (пример)\n📡 Оператор: Пример\n🛡️ Доверенность: 95%\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        )
-        save_log({
-            "command": f"IP {text}",
-            "user_id": user_id,
-            "username": message.from_user.username or "Нет",
-            "target": text,
-            "time": get_msk_time()
-        })
+        await edit_normal_message(message.chat.id, loading.message_id, f"✅ РЕЗУЛЬТАТ ПРОБИВА IP\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🌐 IP-адрес: {text}\n🌍 Город: Москва (пример)\n📡 Оператор: Пример\n🛡️ Доверенность: 95%\n━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        save_log({"command": f"IP {text}", "user_id": user_id, "username": message.from_user.username or "Нет", "target": text, "time": get_msk_time()})
         return
     
-    # Пробив по номеру
     if re.match(r'^\+?\d{10,15}$', text):
         loading = await show_animation(message)
         await asyncio.sleep(1)
-        await edit_normal_message(
-            message.chat.id,
-            loading.message_id,
-            f"✅ РЕЗУЛЬТАТ ПРОБИВА НОМЕРА\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n📱 Номер: {text}\n📡 Оператор: Пример\n🌍 Регион: Москва (пример)\n🛡️ Доверенность: 92%\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        )
-        save_log({
-            "command": f"Номер {text}",
-            "user_id": user_id,
-            "username": message.from_user.username or "Нет",
-            "target": text,
-            "time": get_msk_time()
-        })
+        await edit_normal_message(message.chat.id, loading.message_id, f"✅ РЕЗУЛЬТАТ ПРОБИВА НОМЕРА\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n📱 Номер: {text}\n📡 Оператор: Пример\n🌍 Регион: Москва (пример)\n🛡️ Доверенность: 92%\n━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        save_log({"command": f"Номер {text}", "user_id": user_id, "username": message.from_user.username or "Нет", "target": text, "time": get_msk_time()})
         return
     
-    # Пробив по юзеру
     if text.startswith('@'):
         loading = await show_animation(message)
         await asyncio.sleep(1)
-        await edit_normal_message(
-            message.chat.id,
-            loading.message_id,
-            f"✅ РЕЗУЛЬТАТ ПРОБИВА USERNAME\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n👤 Username: {text}\n🆔 ID: 123456789 (пример)\n📛 Имя: Пример\n🛡️ Доверенность: 88%\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        )
-        save_log({
-            "command": f"Юзер {text}",
-            "user_id": user_id,
-            "username": message.from_user.username or "Нет",
-            "target": text,
-            "time": get_msk_time()
-        })
+        await edit_normal_message(message.chat.id, loading.message_id, f"✅ РЕЗУЛЬТАТ ПРОБИВА USERNAME\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n👤 Username: {text}\n🆔 ID: 123456789 (пример)\n📛 Имя: Пример\n🛡️ Доверенность: 88%\n━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        save_log({"command": f"Юзер {text}", "user_id": user_id, "username": message.from_user.username or "Нет", "target": text, "time": get_msk_time()})
         return
     
     await message.answer("❓ Неизвестная команда\n\n📌 Введи /help для списка команд")
@@ -1219,15 +970,12 @@ async def main():
     print("=" * 60)
     print("🔥 БОТ ЗАПУЩЕН!")
     print(f"👤 АДМИН: {ADMIN_ID}")
-    print(f"🔑 GH_TOKEN: {'✅' if GH_TOKEN else '❌'}")
     print("📌 Команды с / — в личке бота")
     print("📌 Команды с . — в чатах с собеседниками")
-    print("📁 Файлы пишутся в docs/data/ для сайта")
     print("=" * 60)
     
-    os.makedirs('docs/data', exist_ok=True)
+    os.makedirs('data', exist_ok=True)
     
-    # Создаём файлы если их нет
     for file in [LOGS_FILE, BANLIST_FILE, IDLIST_FILE, KEYS_FILE, TECH_FILE]:
         if not os.path.exists(file):
             with open(file, 'w', encoding='utf-8') as f:
