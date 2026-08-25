@@ -34,7 +34,7 @@ if not ADMIN_ID:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# ===== ФАЙЛЫ (ПИШЕМ В data/) =====
+# ===== ФАЙЛЫ =====
 LOGS_FILE = "data/logs.json"
 BANLIST_FILE = "data/banlist.json"
 IDLIST_FILE = "data/idlist.json"
@@ -412,6 +412,75 @@ def get_logs_for_user(user_id, count=10):
     except:
         return []
 
+# ========== ОСТАНОВКА РАННЕРОВ ==========
+async def stop_runners(target, user_id=None, username=None):
+    if not GH_TOKEN:
+        return "❌ GH_TOKEN не настроен!"
+    
+    try:
+        url = f"https://api.github.com/repos/{REPO}/actions/runs"
+        headers = {
+            "Authorization": f"token {GH_TOKEN}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+        
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            return f"❌ Ошибка получения раннеров: {response.status_code}"
+        
+        runs = response.json().get("workflow_runs", [])
+        running_runs = [r for r in runs if r["status"] in ["queued", "in_progress"]]
+        
+        if not running_runs:
+            return "📊 Нет активных раннеров"
+        
+        stopped_count = 0
+        skipped_count = 0
+        
+        for run in running_runs:
+            run_id = run["id"]
+            run_name = run.get("name", "unknown")
+            
+            should_stop = False
+            
+            if target == "max":
+                should_stop = True
+            elif target == "bot":
+                if "bot" in run_name.lower() or "telegram" in run_name.lower():
+                    should_stop = True
+            elif target == "run":
+                if "bot" not in run_name.lower() and "telegram" not in run_name.lower():
+                    should_stop = True
+            
+            if should_stop:
+                cancel_url = f"https://api.github.com/repos/{REPO}/actions/runs/{run_id}/cancel"
+                cancel_response = requests.post(cancel_url, headers=headers)
+                if cancel_response.status_code in [200, 202]:
+                    stopped_count += 1
+                else:
+                    skipped_count += 1
+            else:
+                skipped_count += 1
+        
+        result = f"✅ Остановлено: {stopped_count} раннеров\n"
+        result += f"⏭️ Пропущено: {skipped_count} раннеров\n"
+        result += f"🎯 Цель: {target}\n"
+        result += f"🕐 Время: {get_msk_time()}"
+        
+        save_log({
+            "command": f".stop {target} max",
+            "user_id": user_id or ADMIN_ID,
+            "username": username or "RCON",
+            "stopped": stopped_count,
+            "skipped": skipped_count,
+            "time": get_msk_time()
+        })
+        
+        return result
+        
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)}"
+
 # ========== БИЗНЕС API ==========
 async def delete_business_message(chat_id: int, message_id: int, connection_id: str):
     try:
@@ -559,12 +628,30 @@ async def handle_business_message(message: types.Message):
         text = message.text.strip()
         await delete_business_message(chat_id, message_id, connection_id)
         
-        # .help (ОДИН РАЗ)
+        # .help
         if text.lower() == '.help':
             await send_to_business_chat(chat_id, HELP_TEXT, connection_id)
             return
         
-        # .idlist (ОДИН РАЗ)
+        # .stop
+        if text.lower().startswith('.stop'):
+            parts = text.split(maxsplit=2)
+            if len(parts) < 3:
+                await send_to_business_chat(chat_id, "❌ .stop [run/bot/max] [max]\nПример: .stop run max", connection_id)
+                return
+            
+            target = parts[1].lower()
+            action = parts[2].lower()
+            
+            if target not in ['run', 'bot', 'max'] or action != 'max':
+                await send_to_business_chat(chat_id, "❌ .stop [run/bot/max] [max]", connection_id)
+                return
+            
+            result = await stop_runners(target, user_id, message.from_user.username)
+            await send_to_business_chat(chat_id, result, connection_id)
+            return
+        
+        # .idlist
         if text.lower() == '.idlist':
             try:
                 idlist = load_from_github(IDLIST_FILE) or []
@@ -579,7 +666,7 @@ async def handle_business_message(message: types.Message):
                 await send_to_business_chat(chat_id, f"❌ Ошибка: {e}", connection_id)
             return
         
-        # .logs (ОДИН РАЗ)
+        # .logs
         if text.lower().startswith('.logs'):
             parts = text.split(maxsplit=2)
             if len(parts) < 2:
@@ -600,7 +687,7 @@ async def handle_business_message(message: types.Message):
                 await send_to_business_chat(chat_id, "❌ Неверный формат", connection_id)
             return
         
-        # .ban (ОДИН РАЗ)
+        # .ban
         if text.lower().startswith('.ban'):
             parts = text.split(maxsplit=3)
             if len(parts) < 3:
@@ -612,7 +699,6 @@ async def handle_business_message(message: types.Message):
             minutes, time_display = parse_time(time_str)
             add_ban(target_id, reason, user_id, minutes)
             await send_to_business_chat(chat_id, f"✅ ПОЛЬЗОВАТЕЛЬ ЗАБАНЕН\n\n🆔 ID: {target_id}\n📌 Причина: {reason}\n⏱ Время: {time_display}\n🕐 Дата: {get_msk_time()}", connection_id)
-            # Одно сообщение в ЛС
             try:
                 ban_msg = f"⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ\n\n📌 Причина: {reason}\n⏱ Длительность: {time_display}\n🕐 Дата блокировки: {get_msk_time()}"
                 if minutes:
@@ -623,7 +709,7 @@ async def handle_business_message(message: types.Message):
             save_log({"command": f".ban {target_id}", "user_id": user_id, "username": message.from_user.username or "Нет", "target": target_id, "reason": reason, "time": get_msk_time()})
             return
         
-        # .unban (ОДИН РАЗ)
+        # .unban
         if text.lower().startswith('.unban'):
             parts = text.split(maxsplit=2)
             if len(parts) < 2:
@@ -641,13 +727,13 @@ async def handle_business_message(message: types.Message):
                 await send_to_business_chat(chat_id, f"❌ Пользователь {target_id} не найден в черном списке", connection_id)
             return
         
-        # .key (ОДИН РАЗ)
+        # .key
         if text.lower() == '.key':
             key = create_session_key()
             await send_to_business_chat(chat_id, f"🔑 Ваш ключ:\n\n`{key}`\n\n⏱ Действует 10 часов", connection_id)
             return
         
-        # .tex on/off (ОДИН РАЗ)
+        # .tex on
         if text.lower().startswith('.tex on'):
             parts = text.split(maxsplit=2)
             if len(parts) < 3:
@@ -664,7 +750,7 @@ async def handle_business_message(message: types.Message):
             await send_to_business_chat(chat_id, "✅ ТЕХ-РАБОТЫ ВЫКЛЮЧЕНЫ", connection_id)
             return
         
-        # .whois (ОДИН РАЗ)
+        # .whois
         if text.lower().startswith('.whois'):
             parts = text.split(maxsplit=2)
             if len(parts) < 3:
@@ -681,8 +767,39 @@ async def handle_business_message(message: types.Message):
     except Exception as e:
         logger.error(f"❌ Ошибка бизнес-сообщения: {e}")
 
+# ========== ТЕКСТ ПОМОЩИ ==========
+HELP_TEXT = """📚 СПИСОК КОМАНД
+
+🔹 В ЛИЧКЕ (с /):
+/start — Главное меню
+/help — Справка
+/whois — Пробив
+/idlist — Пользователи (админ)
+/logs (ID) — Логи (админ)
+/ban — Бан (админ)
+/unban — Разбан (админ)
+/key — Ключ для сайта (админ)
+/stop — Остановить раннеры (админ)
+
+🔹 В ЧАТАХ (с .):
+.help — Справка
+.idlist — Пользователи
+.logs (ID) — Логи
+.whois ip [IP] — Пробив IP
+.whois n [номер] — Пробив номера
+.whois qz [@username] — Пробив юзера
+.ban [ID] [время] [причина] — Бан
+.unban [ID] [причина] — Разбан
+.key — Ключ
+.tex on/off — Техработы
+.stop run max — Остановить все раннеры (кроме бота)
+.stop bot max — Остановить все раннеры бота
+.stop max max — Остановить ВСЕ раннеры
+
+📌 .команды — в чатах с собеседниками
+📌 /команды — в личке с ботом"""
+
 # ========== КОМАНДЫ В ЛИЧКЕ ==========
-# /start — ТОЛЬКО ОДИН РАЗ
 @dp.message(Command("start"))
 async def start(message: types.Message):
     user_id = message.from_user.id
@@ -704,9 +821,6 @@ async def start(message: types.Message):
     save_log({"command": "/start", "user_id": user_id, "username": message.from_user.username or "Нет", "time": get_msk_time()})
     await message.answer("🔥 ДОБРО ПОЖАЛОВАТЬ!\n\nВыберите действие:", reply_markup=get_main_keyboard())
 
-# /help — ТОЛЬКО ОДИН РАЗ
-HELP_TEXT = "📚 СПИСОК КОМАНД\n\n🔹 В ЛИЧКЕ (с /):\n/start — Главное меню\n/help — Справка\n/whois — Пробив\n/idlist — Пользователи (админ)\n/logs (ID) — Логи (админ)\n/ban — Бан (админ)\n/unban — Разбан (админ)\n/key — Ключ для сайта (админ)\n\n🔹 В ЧАТАХ (с .):\n.help — Справка\n.idlist — Пользователи\n.logs (ID) — Логи\n.whois ip [IP] — Пробив IP\n.whois n [номер] — Пробив номера\n.whois qz [@username] — Пробив юзера\n.ban [ID] [время] [причина] — Бан\n.unban [ID] [причина] — Разбан\n.key — Ключ\n.tex on/off — Техработы"
-
 @dp.message(Command("help"))
 async def help_command(message: types.Message):
     user_id = message.from_user.id
@@ -719,7 +833,28 @@ async def help_command(message: types.Message):
         return
     await message.answer(HELP_TEXT)
 
-# /whois — ТОЛЬКО ОДИН РАЗ
+@dp.message(Command("stop"))
+async def stop_command(message: types.Message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        await message.answer("❌ У вас нет прав!")
+        return
+    
+    args = message.text.split(maxsplit=2)
+    if len(args) < 3:
+        await message.answer("❌ /stop [run/bot/max] [max]\nПример: /stop run max")
+        return
+    
+    target = args[1].lower()
+    action = args[2].lower()
+    
+    if target not in ['run', 'bot', 'max'] or action != 'max':
+        await message.answer("❌ /stop [run/bot/max] [max]")
+        return
+    
+    result = await stop_runners(target, user_id, message.from_user.username)
+    await message.answer(result)
+
 @dp.message(Command("whois"))
 async def whois_command(message: types.Message):
     user_id = message.from_user.id
@@ -736,7 +871,6 @@ async def whois_command(message: types.Message):
         return
     await message.answer("🔍 Выберите тип пробива:", reply_markup=get_main_keyboard())
 
-# /idlist — ТОЛЬКО ОДИН РАЗ
 @dp.message(Command("idlist"))
 async def idlist_command(message: types.Message):
     user_id = message.from_user.id
@@ -755,7 +889,6 @@ async def idlist_command(message: types.Message):
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
-# /logs — ТОЛЬКО ОДИН РАЗ
 @dp.message(Command("logs"))
 async def logs_command(message: types.Message):
     user_id = message.from_user.id
@@ -780,7 +913,6 @@ async def logs_command(message: types.Message):
     except:
         await message.answer("❌ Неверный формат")
 
-# /ban — ТОЛЬКО ОДИН РАЗ
 @dp.message(Command("ban"))
 async def ban_command(message: types.Message):
     user_id = message.from_user.id
@@ -806,7 +938,6 @@ async def ban_command(message: types.Message):
         pass
     save_log({"command": f"/ban {target_id}", "user_id": user_id, "username": message.from_user.username or "Нет", "target": target_id, "reason": reason, "time": get_msk_time()})
 
-# /unban — ТОЛЬКО ОДИН РАЗ
 @dp.message(Command("unban"))
 async def unban_command(message: types.Message):
     user_id = message.from_user.id
@@ -828,7 +959,6 @@ async def unban_command(message: types.Message):
     else:
         await message.answer(f"❌ Пользователь {target_id} не найден в черном списке")
 
-# /key — ТОЛЬКО ОДИН РАЗ
 @dp.message(Command("key"))
 async def key_command(message: types.Message):
     user_id = message.from_user.id
@@ -838,7 +968,6 @@ async def key_command(message: types.Message):
     key = create_session_key()
     await message.answer(f"🔑 Ваш ключ:\n\n`{key}`\n\n⏱ Действует 10 часов")
 
-# /chkban — ТОЛЬКО ОДИН РАЗ
 @dp.message(Command("chkban"))
 async def chkban_command(message: types.Message):
     user_id = message.from_user.id
@@ -856,7 +985,6 @@ async def chkban_command(message: types.Message):
     else:
         await message.answer(f"⛔ {target_id} не заблокирован.")
 
-# /tex — ТОЛЬКО ОДИН РАЗ
 @dp.message(Command("tex"))
 async def tex_command(message: types.Message):
     user_id = message.from_user.id
