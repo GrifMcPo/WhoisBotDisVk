@@ -1,20 +1,17 @@
-// ===== ВЕРСИЯ 7.0 =====
-console.log('🚀 Whois Admin v7.0 (с прокси)');
+// ===== ВЕРСИЯ 9.0 =====
+console.log('🚀 Whois Admin v9.0');
 
-// ===== КОНФИГ =====
-const GITHUB_RAW = 'https://raw.githubusercontent.com/GrifMcPo/WhoisBotDisVk/main/data';
-
-// ===== ПРОКСИ ДЛЯ ОБХОДА CORS =====
-const PROXY = 'https://api.allorigins.win/raw?url=';
+// ===== КОНФИГ — читаем с ТОГО ЖЕ ДОМЕНА =====
+const DATA_PATH = './data';
 
 // ===== ПЕРЕМЕННЫЕ =====
 let sessionActive = false;
 let updateInterval = null;
 
-// ===== ФУНКЦИЯ ЧТЕНИЯ ФАЙЛА ЧЕРЕЗ ПРОКСИ =====
+// ===== ФУНКЦИЯ ЧТЕНИЯ ФАЙЛА (без CORS) =====
 async function readFile(fileName) {
     try {
-        const url = `${PROXY}${GITHUB_RAW}/${fileName}?_=${Date.now()}`;
+        const url = `${DATA_PATH}/${fileName}?_=${Date.now()}`;
         const res = await fetch(url, {
             cache: 'no-cache',
             headers: {
@@ -207,5 +204,5 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
-console.log('🚀 Whois Admin v7.0 loaded');
-console.log('🔗 Прокси:', PROXY);
+console.log('🚀 Whois Admin v9.0 loaded');
+console.log('📁 DATA_PATH:', DATA_PATH);
