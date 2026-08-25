@@ -2,37 +2,66 @@
 const GITHUB_RAW = 'https://raw.githubusercontent.com/GrifMcPo/WhoisBotDisVk/main/data';
 
 // ===== ПЕРЕМЕННЫЕ =====
-let currentKey = null;
 let sessionActive = false;
 
 // ===== ВХОД =====
-function login() {
+async function login() {
     const key = document.getElementById('keyInput').value.trim();
     const errorEl = document.getElementById('loginError');
+    const loadingEl = document.getElementById('loginLoading');
     
     if (!key) {
         errorEl.textContent = '❌ Введите ключ';
         return;
     }
     
-    if (key.startsWith('ADMIN_') && key.length === 10) {
-        sessionActive = true;
-        currentKey = key;
-        document.getElementById('loginPage').style.display = 'none';
-        document.getElementById('adminPage').style.display = 'block';
-        loadLogs();
-        loadUsers();
-        loadBans();
-        loadTechStatus();
-        errorEl.textContent = '';
-    } else {
-        errorEl.textContent = '❌ Неверный ключ';
+    errorEl.textContent = '';
+    loadingEl.style.display = 'block';
+    
+    try {
+        const url = `https://raw.githubusercontent.com/GrifMcPo/WhoisBotDisVk/main/data/keys.json?_=${Date.now()}`;
+        const res = await fetch(url, {
+            cache: 'no-cache',
+            headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' }
+        });
+        
+        if (!res.ok) {
+            throw new Error('Файл keys.json не найден. Подождите, пока бот создаст ключ.');
+        }
+        
+        const keys = await res.json();
+        
+        if (keys[key]) {
+            const expires = new Date(keys[key].expires_at);
+            const now = new Date();
+            
+            if (expires > now) {
+                sessionActive = true;
+                document.getElementById('loginPage').style.display = 'none';
+                document.getElementById('adminPage').style.display = 'block';
+                loadLogs();
+                loadUsers();
+                loadBans();
+                loadTechStatus();
+                errorEl.textContent = '';
+                loadingEl.style.display = 'none';
+                return;
+            } else {
+                errorEl.textContent = '❌ Ключ истёк. Получите новый через /key в боте';
+            }
+        } else {
+            errorEl.textContent = '❌ Неверный ключ';
+        }
+    } catch (e) {
+        errorEl.textContent = '❌ ' + e.message;
+        console.error('Login error:', e);
     }
+    
+    loadingEl.style.display = 'none';
 }
 
 function logout() {
     sessionActive = false;
-    currentKey = null;
     document.getElementById('adminPage').style.display = 'none';
     document.getElementById('loginPage').style.display = 'block';
     document.getElementById('keyInput').value = '';
@@ -51,6 +80,7 @@ function showTab(tab) {
 async function loadLogs() {
     try {
         const res = await fetch(`${GITHUB_RAW}/logs.json?_=${Date.now()}`, {
+            cache: 'no-cache',
             headers: { 'Cache-Control': 'no-cache' }
         });
         if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -78,6 +108,7 @@ async function loadLogs() {
 async function loadUsers() {
     try {
         const res = await fetch(`${GITHUB_RAW}/idlist.json?_=${Date.now()}`, {
+            cache: 'no-cache',
             headers: { 'Cache-Control': 'no-cache' }
         });
         if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -105,6 +136,7 @@ async function loadUsers() {
 async function loadBans() {
     try {
         const res = await fetch(`${GITHUB_RAW}/banlist.json?_=${Date.now()}`, {
+            cache: 'no-cache',
             headers: { 'Cache-Control': 'no-cache' }
         });
         if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -134,6 +166,7 @@ async function loadBans() {
 async function loadTechStatus() {
     try {
         const res = await fetch(`${GITHUB_RAW}/tech.json?_=${Date.now()}`, {
+            cache: 'no-cache',
             headers: { 'Cache-Control': 'no-cache' }
         });
         if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -174,3 +207,4 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 console.log('🚀 Whois Admin loaded');
+console.log('📁 GITHUB_RAW:', GITHUB_RAW);
