@@ -1,24 +1,25 @@
-// ===== ВЕРСИЯ 5.1 =====
-console.log('🚀 Whois Admin v5.1');
+// ===== ВЕРСИЯ 7.0 =====
+console.log('🚀 Whois Admin v7.0 (с прокси)');
 
 // ===== КОНФИГ =====
 const GITHUB_RAW = 'https://raw.githubusercontent.com/GrifMcPo/WhoisBotDisVk/main/data';
+
+// ===== ПРОКСИ ДЛЯ ОБХОДА CORS =====
+const PROXY = 'https://api.allorigins.win/raw?url=';
 
 // ===== ПЕРЕМЕННЫЕ =====
 let sessionActive = false;
 let updateInterval = null;
 
-// ===== ФУНКЦИЯ ЧТЕНИЯ ФАЙЛА ЧЕРЕЗ RAW (С ОБХОДОМ CORS) =====
+// ===== ФУНКЦИЯ ЧТЕНИЯ ФАЙЛА ЧЕРЕЗ ПРОКСИ =====
 async function readFile(fileName) {
     try {
-        const url = `${GITHUB_RAW}/${fileName}?_=${Date.now()}`;
+        const url = `${PROXY}${GITHUB_RAW}/${fileName}?_=${Date.now()}`;
         const res = await fetch(url, {
-            mode: 'cors',
             cache: 'no-cache',
             headers: {
                 'Cache-Control': 'no-cache, no-store, must-revalidate',
-                'Pragma': 'no-cache',
-                'Accept': 'application/json'
+                'Pragma': 'no-cache'
             }
         });
         if (!res.ok) {
@@ -85,7 +86,7 @@ async function login() {
                 errorEl.textContent = '❌ Ключ истёк. Получите новый через /key в боте';
             }
         } else {
-            errorEl.textContent = '❌ Неверный ключ. Попробуйте: ADMIN_8THFK';
+            errorEl.textContent = '❌ Неверный ключ';
         }
     } catch (e) {
         errorEl.textContent = '❌ Ошибка проверки ключа. Проверьте интернет-соединение.';
@@ -206,5 +207,5 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
-console.log('🚀 Whois Admin v5.1 loaded');
-console.log('📁 GITHUB_RAW:', GITHUB_RAW);
+console.log('🚀 Whois Admin v7.0 loaded');
+console.log('🔗 Прокси:', PROXY);
