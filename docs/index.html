@@ -3,63 +3,262 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-    <meta http-equiv="Pragma" content="no-cache">
-    <meta http-equiv="Expires" content="0">
     <title>Whois Admin</title>
-    <link rel="stylesheet" href="style.css?v=2.0">
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;background:#0a1628;color:#e0e8f0;min-height:100vh;display:flex;justify-content:center;align-items:center}
+        .container{width:100%;max-width:550px;padding:20px}
+        .login-box{background:rgba(20,50,100,0.9);border:1px solid rgba(0,100,255,0.3);border-radius:16px;padding:40px;text-align:center;box-shadow:0 0 60px rgba(0,100,255,0.1);animation:glow 3s infinite alternate}
+        @keyframes glow{0%{box-shadow:0 0 30px rgba(0,100,255,0.1)}100%{box-shadow:0 0 80px rgba(0,100,255,0.3)}}
+        .login-box h1{font-size:32px;color:#4a9eff;margin-bottom:10px}
+        .login-box p{color:#8899bb;margin-bottom:20px}
+        .login-box input{width:100%;padding:14px 18px;background:rgba(10,20,40,0.8);border:1px solid rgba(0,100,255,0.3);border-radius:10px;color:#e0e8f0;font-size:16px;outline:none;text-align:center;letter-spacing:2px}
+        .login-box input:focus{border-color:#4a9eff}
+        .login-box button{width:100%;padding:14px;margin-top:16px;background:linear-gradient(135deg,#1a6aff,#4a9eff);color:white;border:none;border-radius:10px;font-size:16px;font-weight:bold;cursor:pointer;transition:transform 0.2s}
+        .login-box button:hover{transform:scale(1.02)}
+        .error{color:#ff4455;margin-top:12px;font-size:14px}
+        .loading{color:#4a9eff;margin-top:12px;display:none}
+        .admin-panel{display:none;background:rgba(20,50,100,0.9);border:1px solid rgba(0,100,255,0.3);border-radius:16px;padding:30px;box-shadow:0 0 60px rgba(0,100,255,0.1);animation:glow 3s infinite alternate}
+        .admin-panel header{display:flex;justify-content:space-between;align-items:center;padding-bottom:16px;border-bottom:1px solid rgba(0,100,255,0.2);margin-bottom:20px}
+        .admin-panel header h1{font-size:24px;color:#4a9eff}
+        .admin-panel .logout-btn{padding:8px 20px;background:transparent;border:1px solid #ff4455;color:#ff4455;border-radius:8px;cursor:pointer;transition:all 0.3s}
+        .admin-panel .logout-btn:hover{background:#ff4455;color:#fff}
+        .tab-btn{padding:8px 16px;background:rgba(20,50,100,0.5);border:1px solid rgba(0,100,255,0.2);border-radius:8px;color:#8899bb;cursor:pointer;margin-right:4px;transition:all 0.3s}
+        .tab-btn:hover{background:rgba(0,100,255,0.2);color:#e0e8f0}
+        .tab-btn.active{background:rgba(0,100,255,0.3);border-color:#4a9eff;color:#4a9eff}
+        .tab-content{display:none;margin-top:16px}
+        .tab-content.active{display:block}
+        .logs-container{max-height:400px;overflow-y:auto}
+        .logs-container::-webkit-scrollbar{width:4px}
+        .logs-container::-webkit-scrollbar-thumb{background:#2a3a4e;border-radius:2px}
+        .log-item,.user-item,.ban-item{padding:8px 12px;background:rgba(10,20,40,0.4);border-radius:6px;margin-bottom:4px;font-size:13px;border-left:2px solid #4a9eff;display:flex;justify-content:space-between}
+        .log-item .time{color:#667799}
+        .status-text{margin-top:16px;padding:12px;background:rgba(10,20,40,0.4);border-radius:8px;font-size:13px;color:#8899bb;text-align:center}
+    </style>
 </head>
 <body>
-    <div class="container" id="app">
-        <!-- Страница входа -->
-        <div id="loginPage">
-            <div class="login-box">
-                <h1>🔐 Whois Admin</h1>
-                <p>Введите ключ доступа</p>
-                <input type="text" id="keyInput" placeholder="ADMIN_XXXXX">
-                <button onclick="login()">Войти</button>
-                <div id="loginError" class="error"></div>
-                <div id="loginLoading" style="display:none;color:#4a9eff;">⏳ Проверка ключа...</div>
-            </div>
+<div class="container">
+    <!-- Вход -->
+    <div id="loginPage" class="login-box">
+        <h1>🔐 Whois Admin</h1>
+        <p>Введите ключ доступа</p>
+        <input type="text" id="keyInput" placeholder="ADMIN_XXXXX">
+        <button onclick="login()">Войти</button>
+        <div id="loginError" class="error"></div>
+        <div id="loginLoading" class="loading">⏳ Проверка ключа...</div>
+    </div>
+
+    <!-- Админ-панель -->
+    <div id="adminPage" class="admin-panel">
+        <header>
+            <h1>🚀 Whois Admin</h1>
+            <button class="logout-btn" onclick="logout()">Выйти</button>
+        </header>
+        <div>
+            <button class="tab-btn active" data-tab="logs" onclick="showTab('logs')">📋 Логи</button>
+            <button class="tab-btn" data-tab="users" onclick="showTab('users')">👥 Пользователи</button>
+            <button class="tab-btn" data-tab="bans" onclick="showTab('bans')">⛔ Баны</button>
+            <button class="tab-btn" data-tab="settings" onclick="showTab('settings')">⚙️</button>
         </div>
-
-        <!-- Админ-панель -->
-        <div id="adminPage" style="display:none">
-            <header>
-                <h1>🚀 Whois Admin</h1>
-                <button onclick="logout()" class="logout-btn">Выйти</button>
-            </header>
-            
-            <nav class="tabs">
-                <button class="tab active" data-tab="logs" onclick="showTab('logs')">📋 Логи</button>
-                <button class="tab" data-tab="users" onclick="showTab('users')">👥 Пользователи</button>
-                <button class="tab" data-tab="bans" onclick="showTab('bans')">⛔ Баны</button>
-                <button class="tab" data-tab="settings" onclick="showTab('settings')">⚙️ Настройки</button>
-            </nav>
-
-            <div id="logsTab" class="tab-content">
-                <h2>📋 Логи команд</h2>
-                <div id="logsList"><p style="color:#667799;">⏳ Загрузка...</p></div>
+        <div id="tab-logs" class="tab-content active"><div class="logs-container" id="logsList"><div style="color:#667799;">⏳ Загрузка...</div></div></div>
+        <div id="tab-users" class="tab-content"><div class="logs-container" id="usersList"><div style="color:#667799;">⏳ Загрузка...</div></div></div>
+        <div id="tab-bans" class="tab-content"><div class="logs-container" id="bansList"><div style="color:#667799;">⏳ Загрузка...</div></div></div>
+        <div id="tab-settings" class="tab-content">
+            <div class="status-text" id="techStatus">🛠️ Техработы: выключены</div>
+            <div style="margin-top:12px;text-align:center;">
+                <button onclick="toggleTech()" id="techBtn" style="padding:8px 20px;background:#1a6aff;color:white;border:none;border-radius:8px;cursor:pointer;">🛠️ Включить техработы</button>
             </div>
-
-            <div id="usersTab" class="tab-content" style="display:none">
-                <h2>👥 Список пользователей</h2>
-                <div id="usersList"><p style="color:#667799;">⏳ Загрузка...</p></div>
-            </div>
-
-            <div id="bansTab" class="tab-content" style="display:none">
-                <h2>⛔ Управление банами</h2>
-                <div id="bansList"><p style="color:#667799;">⏳ Загрузка...</p></div>
-            </div>
-
-            <div id="settingsTab" class="tab-content" style="display:none">
-                <h2>⚙️ Настройки бота</h2>
-                <button onclick="toggleTech()" id="techBtn">🛠️ Включить техработы</button>
-                <p id="techStatus" style="margin-top:12px;">Техработы: выключены</p>
-                <p style="margin-top:12px;color:#667799;font-size:13px;">💡 Управление через бота: <code>.tex on 1h</code> или <code>.tex off</code></p>
+            <div style="margin-top:16px;padding:12px;background:rgba(10,20,40,0.4);border-radius:8px;font-size:12px;color:#667799;text-align:center;">
+                💡 Команды для бота:<br>
+                <code>.ban, .unban, .logs, .idlist, .key, .tex on/off</code>
             </div>
         </div>
     </div>
-    <script src="script.js?v=3.0"></script>
+</div>
+
+<script>
+// ===== ВЕРСИЯ 13.0 — КЛЮЧИ ВСТРОЕНЫ, ДАННЫЕ ИЗ ФАЙЛОВ =====
+console.log('🚀 Whois Admin v13.0');
+
+// ===== ВСТРОЕННЫЕ КЛЮЧИ =====
+const KEYS = {
+    "ADMIN_YFCHY": {"expires_at": "2026-08-26T00:03:42.535130"},
+    "ADMIN_GBHB1": {"expires_at": "2026-08-26T00:11:11.971211"},
+    "ADMIN_6VMM9": {"expires_at": "2026-08-26T00:25:48.272155"},
+    "ADMIN_SHLCS": {"expires_at": "2026-08-26T00:29:33.796815"},
+    "ADMIN_8THFK": {"expires_at": "2026-08-26T00:29:36.226785"},
+    "ADMIN_V0P0V": {"expires_at": "2026-08-26T00:30:30.290753"},
+    "ADMIN_G3S1C": {"expires_at": "2026-08-26T00:30:31.412086"}
+};
+
+console.log('🔑 Доступные ключи:', Object.keys(KEYS).join(', '));
+
+// ===== ПЕРЕМЕННЫЕ =====
+let sessionActive = false;
+let updateInterval = null;
+
+// ===== ФУНКЦИЯ ЧТЕНИЯ ФАЙЛА =====
+async function readFile(fileName) {
+    try {
+        const url = `data/${fileName}?_=${Date.now()}`;
+        const res = await fetch(url, {
+            cache: 'no-cache',
+            headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' }
+        });
+        if (!res.ok) {
+            if (res.status === 404) return null;
+            throw new Error(`HTTP ${res.status}`);
+        }
+        return await res.json();
+    } catch (e) {
+        console.error(`Ошибка чтения ${fileName}:`, e.message);
+        return null;
+    }
+}
+
+// ===== ВХОД =====
+async function login() {
+    const key = document.getElementById('keyInput').value.trim();
+    const errorEl = document.getElementById('loginError');
+    const loadingEl = document.getElementById('loginLoading');
+    
+    errorEl.textContent = '';
+    if (!key) { errorEl.textContent = '❌ Введите ключ'; return; }
+    
+    if (!KEYS[key]) {
+        errorEl.textContent = '❌ Неверный ключ. Попробуй: ADMIN_YFCHY, ADMIN_8THFK, ADMIN_V0P0V, ADMIN_G3S1C';
+        return;
+    }
+    
+    if (new Date(KEYS[key].expires_at) <= new Date()) {
+        errorEl.textContent = '❌ Ключ истёк. Получите новый через /key';
+        return;
+    }
+    
+    loadingEl.style.display = 'block';
+    
+    try {
+        await loadAllData();
+        sessionActive = true;
+        document.getElementById('loginPage').style.display = 'none';
+        document.getElementById('adminPage').style.display = 'block';
+        errorEl.textContent = '';
+        loadingEl.style.display = 'none';
+        
+        if (updateInterval) clearInterval(updateInterval);
+        updateInterval = setInterval(() => {
+            if (sessionActive) loadAllData();
+        }, 15000);
+    } catch (e) {
+        errorEl.textContent = '❌ Ошибка загрузки данных';
+        loadingEl.style.display = 'none';
+    }
+}
+
+function logout() {
+    sessionActive = false;
+    if (updateInterval) { clearInterval(updateInterval); updateInterval = null; }
+    document.getElementById('adminPage').style.display = 'none';
+    document.getElementById('loginPage').style.display = 'block';
+    document.getElementById('keyInput').value = '';
+    document.getElementById('loginError').textContent = '';
+}
+
+// ===== ЗАГРУЗКА ВСЕХ ДАННЫХ =====
+async function loadAllData() {
+    await Promise.all([
+        loadLogs(),
+        loadUsers(),
+        loadBans(),
+        loadTechStatus()
+    ]);
+}
+
+// ===== ВКЛАДКИ =====
+function showTab(tab) {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.querySelector(`.tab-btn[data-tab="${tab}"]`)?.classList.add('active');
+    document.getElementById(`tab-${tab}`)?.classList.add('active');
+    if (tab === 'logs') loadLogs();
+    if (tab === 'users') loadUsers();
+    if (tab === 'bans') loadBans();
+}
+
+// ===== ЗАГРУЗКА ЛОГОВ =====
+async function loadLogs() {
+    const data = await readFile('logs.json');
+    const container = document.getElementById('logsList');
+    if (!container) return;
+    if (!data || data.length === 0) {
+        container.innerHTML = '<div style="color:#667799;">📭 Логов пока нет</div>';
+        return;
+    }
+    container.innerHTML = data.slice().reverse().slice(0, 50).map(log => `
+        <div class="log-item">
+            <span><span class="time">[${log.time || '—'}]</span> ${log.command || '—'}</span>
+            <span>${log.username || log.user_id || '—'}</span>
+        </div>
+    `).join('');
+}
+
+// ===== ЗАГРУЗКА ПОЛЬЗОВАТЕЛЕЙ =====
+async function loadUsers() {
+    const data = await readFile('idlist.json');
+    const container = document.getElementById('usersList');
+    if (!container) return;
+    if (!data || data.length === 0) {
+        container.innerHTML = '<div style="color:#667799;">📭 Пользователей пока нет</div>';
+        return;
+    }
+    container.innerHTML = data.map(user => `
+        <div class="user-item">
+            <span>🆔 ${user.id || '?'}</span>
+            <span>👤 ${user.username ? '@' + user.username : 'Нет'}</span>
+        </div>
+    `).join('');
+}
+
+// ===== ЗАГРУЗКА БАНОВ =====
+async function loadBans() {
+    const data = await readFile('banlist.json');
+    const container = document.getElementById('bansList');
+    if (!container) return;
+    const entries = Object.entries(data || {});
+    if (entries.length === 0) {
+        container.innerHTML = '<div style="color:#667799;">📭 Банов нет</div>';
+        return;
+    }
+    container.innerHTML = entries.map(([id, info]) => `
+        <div class="ban-item">
+            <span>🆔 ${id}</span>
+            <span>📌 ${info.reason || '—'}</span>
+            <span>🕐 ${info.added_at || '—'}</span>
+        </div>
+    `).join('');
+}
+
+// ===== ТЕХРАБОТЫ =====
+async function loadTechStatus() {
+    const data = await readFile('tech.json');
+    const status = data && data.active ? 'включены' : 'выключены';
+    const btn = document.getElementById('techBtn');
+    const statusEl = document.getElementById('techStatus');
+    if (btn) btn.textContent = data && data.active ? '❌ Выключить техработы' : '🛠️ Включить техработы';
+    if (statusEl) statusEl.textContent = `🛠️ Техработы: ${status}`;
+}
+
+async function toggleTech() {
+    alert('Для управления техработами используй бот-команды:\n.tex on [время]\n.tex off');
+}
+
+// ===== ENTER =====
+document.getElementById('keyInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') login();
+});
+
+console.log('✅ RCON Admin v13.0 готов!');
+console.log('📁 Данные читаются из docs/data/*.json');
+</script>
 </body>
 </html>
