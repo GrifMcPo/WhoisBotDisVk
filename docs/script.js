@@ -1,15 +1,14 @@
-// ===== ВЕРСИЯ 3.0 =====
-console.log('🚀 Whois Admin v3.0');
+// ===== ВЕРСИЯ 5.0 =====
+console.log('🚀 Whois Admin v5.0');
 
 // ===== КОНФИГ =====
-const GITHUB_API = 'https://api.github.com/repos/GrifMcPo/WhoisBotDisVk/contents/data';
 const GITHUB_RAW = 'https://raw.githubusercontent.com/GrifMcPo/WhoisBotDisVk/main/data';
 
 // ===== ПЕРЕМЕННЫЕ =====
 let sessionActive = false;
 let updateInterval = null;
 
-// ===== ФУНКЦИЯ ЧТЕНИЯ ФАЙЛА =====
+// ===== ФУНКЦИЯ ЧТЕНИЯ ФАЙЛА ЧЕРЕЗ RAW =====
 async function readFile(fileName) {
     try {
         const url = `${GITHUB_RAW}/${fileName}?_=${Date.now()}`;
@@ -20,7 +19,13 @@ async function readFile(fileName) {
                 'Pragma': 'no-cache'
             }
         });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (!res.ok) {
+            if (res.status === 404) {
+                console.warn(`Файл ${fileName} не найден`);
+                return null;
+            }
+            throw new Error(`HTTP ${res.status}`);
+        }
         return await res.json();
     } catch (e) {
         console.error(`Ошибка чтения ${fileName}:`, e);
@@ -28,22 +33,10 @@ async function readFile(fileName) {
     }
 }
 
-// ===== ФУНКЦИЯ ЧТЕНИЯ КЛЮЧЕЙ ЧЕРЕЗ API (ДЛЯ ВХОДА) =====
-async function readKeysFromApi() {
-    const url = `${GITHUB_API}/keys.json`;
-    const res = await fetch(url, {
-        headers: {
-            'Accept': 'application/vnd.github.v3+json',
-            'Cache-Control': 'no-cache, no-store, must-revalidate'
-        }
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const content = atob(data.content);
-    return JSON.parse(content);
-}
+// ===== ФУНКЦИЯ ЗАПИСИ (ПОКА НЕТ) =====
+// Для записи используется бот через GitHub API
 
-// ===== ВХОД =====
+// ===== ВХОД (ЧИТАЕТ keys.json) =====
 async function login() {
     const key = document.getElementById('keyInput').value.trim();
     const errorEl = document.getElementById('loginError');
@@ -58,7 +51,13 @@ async function login() {
     loadingEl.style.display = 'block';
     
     try {
-        const keys = await readKeysFromApi();
+        const keys = await readFile('keys.json');
+        
+        if (!keys) {
+            errorEl.textContent = '❌ Файл keys.json не найден. Получите ключ через /key в боте';
+            loadingEl.style.display = 'none';
+            return;
+        }
         
         if (keys[key]) {
             const expires = new Date(keys[key].expires_at);
@@ -69,22 +68,14 @@ async function login() {
                 document.getElementById('loginPage').style.display = 'none';
                 document.getElementById('adminPage').style.display = 'block';
                 
-                // Первая загрузка
-                await Promise.all([
-                    loadLogs(),
-                    loadUsers(),
-                    loadBans(),
-                    loadTechStatus()
-                ]);
+                // Загружаем все данные
+                await loadAllData();
                 
-                // Запускаем обновление каждые 10 секунд
+                // Обновление каждые 10 секунд
                 if (updateInterval) clearInterval(updateInterval);
                 updateInterval = setInterval(() => {
                     if (sessionActive) {
-                        loadLogs();
-                        loadUsers();
-                        loadBans();
-                        loadTechStatus();
+                        loadAllData();
                     }
                 }, 10000);
                 
@@ -98,7 +89,7 @@ async function login() {
             errorEl.textContent = '❌ Неверный ключ';
         }
     } catch (e) {
-        errorEl.textContent = '❌ Ошибка проверки ключа. Убедитесь, что бот создал ключ.';
+        errorEl.textContent = '❌ Ошибка проверки ключа. Проверьте интернет-соединение.';
         console.error('Login error:', e);
     }
     
@@ -116,6 +107,16 @@ function logout() {
     document.getElementById('keyInput').value = '';
 }
 
+// ===== ЗАГРУЗКА ВСЕХ ДАННЫХ =====
+async function loadAllData() {
+    await Promise.all([
+        loadLogs(),
+        loadUsers(),
+        loadBans(),
+        loadTechStatus()
+    ]);
+}
+
 // ===== ВКЛАДКИ =====
 function showTab(tab) {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -123,9 +124,14 @@ function showTab(tab) {
     document.querySelectorAll('.tab-content').forEach(c => c.style.display = 'none');
     const target = document.getElementById(`${tab}Tab`);
     if (target) target.style.display = 'block';
+    
+    // При переключении вкладки обновляем данные
+    if (tab === 'logs') loadLogs();
+    if (tab === 'users') loadUsers();
+    if (tab === 'bans') loadBans();
 }
 
-// ===== ЗАГРУЗКА ЛОГОВ =====
+// ===== ЗАГРУЗКА ЛОГОВ (читает logs.json) =====
 async function loadLogs() {
     const data = await readFile('logs.json');
     const container = document.getElementById('logsList');
@@ -142,7 +148,7 @@ async function loadLogs() {
     `).join('');
 }
 
-// ===== ЗАГРУЗКА ПОЛЬЗОВАТЕЛЕЙ =====
+// ===== ЗАГРУЗКА ПОЛЬЗОВАТЕЛЕЙ (читает idlist.json) =====
 async function loadUsers() {
     const data = await readFile('idlist.json');
     const container = document.getElementById('usersList');
@@ -159,7 +165,7 @@ async function loadUsers() {
     `).join('');
 }
 
-// ===== ЗАГРУЗКА БАНОВ =====
+// ===== ЗАГРУЗКА БАНОВ (читает banlist.json) =====
 async function loadBans() {
     const data = await readFile('banlist.json');
     const container = document.getElementById('bansList');
@@ -178,7 +184,7 @@ async function loadBans() {
     `).join('');
 }
 
-// ===== ТЕХРАБОТЫ =====
+// ===== ТЕХРАБОТЫ (читает tech.json) =====
 async function loadTechStatus() {
     const data = await readFile('tech.json');
     const status = data && data.active ? 'включены' : 'выключены';
@@ -202,6 +208,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
-console.log('🚀 Whois Admin v3.0 loaded');
+console.log('🚀 Whois Admin v5.0 loaded');
 console.log('📁 GITHUB_RAW:', GITHUB_RAW);
+console.log('📂 Файлы: logs.json, idlist.json, banlist.json, keys.json, tech.json');
 console.log('🔄 Обновление данных каждые 10 секунд');
