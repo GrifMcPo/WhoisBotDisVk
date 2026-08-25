@@ -3,51 +3,55 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin Panel</title>
+    <title>Whois Admin</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <div class="container">
-        <div class="login-box" id="loginBox">
-            <h1>🔐 Вход в панель</h1>
-            <p class="subtitle">Введите ключ доступа</p>
-            <div class="input-group">
-                <input type="text" id="keyInput" placeholder="ADMIN_XXXXX" maxlength="10">
-                <button id="keySubmitBtn">Проверить</button>
+    <div class="container" id="app">
+        <!-- Страница входа -->
+        <div id="loginPage">
+            <div class="login-box">
+                <h1>🔐 Whois Admin</h1>
+                <p>Введите ключ доступа</p>
+                <input type="text" id="keyInput" placeholder="ADMIN_XXXXX">
+                <button onclick="login()">Войти</button>
+                <div id="loginError" class="error"></div>
             </div>
-            <div id="keyStatus" class="status-message"></div>
         </div>
 
-        <div class="admin-panel" id="adminPanel" style="display: none;">
-            <h1>🛠️ Админ панель</h1>
-            <div class="stats-grid">
-                <div class="stat-card" onclick="showLogs()">
-                    <div class="stat-icon">📊</div>
-                    <h3>Логи</h3>
-                    <p>Просмотр всех логов</p>
-                    <button>Открыть</button>
-                </div>
-                <div class="stat-card" onclick="showUsers()">
-                    <div class="stat-icon">👥</div>
-                    <h3>ID список</h3>
-                    <p>Все пользователи</p>
-                    <button>Открыть</button>
-                </div>
-                <div class="stat-card" onclick="showBans()">
-                    <div class="stat-icon">⛔</div>
-                    <h3>Баны</h3>
-                    <p>Управление банами</p>
-                    <button>Открыть</button>
-                </div>
-                <div class="stat-card" onclick="showSettings()">
-                    <div class="stat-icon">⚙️</div>
-                    <h3>Настройки</h3>
-                    <p>Технические работы</p>
-                    <button>Открыть</button>
-                </div>
+        <!-- Админ-панель -->
+        <div id="adminPage" style="display:none">
+            <header>
+                <h1>🚀 Whois Admin</h1>
+                <button onclick="logout()" class="logout-btn">Выйти</button>
+            </header>
+            
+            <nav class="tabs">
+                <button class="tab active" data-tab="logs" onclick="showTab('logs')">📋 Логи</button>
+                <button class="tab" data-tab="users" onclick="showTab('users')">👥 Пользователи</button>
+                <button class="tab" data-tab="bans" onclick="showTab('bans')">⛔ Баны</button>
+                <button class="tab" data-tab="settings" onclick="showTab('settings')">⚙️ Настройки</button>
+            </nav>
+
+            <div id="logsTab" class="tab-content">
+                <h2>📋 Логи команд</h2>
+                <div id="logsList"></div>
             </div>
-            <div id="contentArea" class="content-area">
-                <p class="hint">👈 Выберите раздел для просмотра</p>
+
+            <div id="usersTab" class="tab-content" style="display:none">
+                <h2>👥 Список пользователей</h2>
+                <div id="usersList"></div>
+            </div>
+
+            <div id="bansTab" class="tab-content" style="display:none">
+                <h2>⛔ Управление банами</h2>
+                <div id="bansList"></div>
+            </div>
+
+            <div id="settingsTab" class="tab-content" style="display:none">
+                <h2>⚙️ Настройки бота</h2>
+                <button onclick="toggleTech()" id="techBtn">Включить техработы</button>
+                <p id="techStatus">Техработы: выключены</p>
             </div>
         </div>
     </div>
