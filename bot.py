@@ -10,13 +10,9 @@ from typing import Optional, List
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery, BusinessMessage
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.client.default import DefaultBotProperties
-
-# ДЛЯ BUSINESS MESSAGE В Aiogram 3.5.0
-from aiogram.types.business_connection import BusinessConnection
-from aiogram.types.business_message import BusinessMessage
 
 # МОЩНОЕ ЛОГИРОВАНИЕ
 logging.basicConfig(
@@ -396,9 +392,9 @@ async def delete_message(target, message_id):
     except Exception as e:
         logger.error(f'❌ Не удалось удалить: {e}')
 
-# ─── ОБРАБОТЧИК БИЗНЕС-СООБЩЕНИЙ (Business API) ───
+# ─── ОБРАБОТЧИК ЛС СООБЩЕНИЙ ───
 
-@dp.message(F.text & F.chat.type.in_({'private'}))  # ЛС команды
+@dp.message(F.text & F.chat.type.in_({'private'}))
 async def handle_dm_message(message: Message):
     """Обработка личных сообщений боту (/команды)"""
     user_id = message.from_user.id
