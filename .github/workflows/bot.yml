@@ -3,6 +3,8 @@ name: Telegram Bot
 on:
   push:
     branches: [ main ]
+    paths-ignore:
+      - 'data/**'  # ИГНОРИРУЕМ ВСЁ В ПАПКЕ DATA
   schedule:
     - cron: '*/5 * * * *'
   workflow_dispatch:
