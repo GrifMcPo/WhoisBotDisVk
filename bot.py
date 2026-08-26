@@ -15,7 +15,11 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram import F
 import aiohttp
 
-logging.basicConfig(level=logging.INFO)
+# ===== НАСТРОЙКА ЛОГИРОВАНИЯ =====
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # ===== СЕКРЕТЫ =====
@@ -641,59 +645,85 @@ def get_main_keyboard():
         [InlineKeyboardButton(text="👤 ПРОБИВ ЮЗЕРА", callback_data="probe_user")],
     ])
 
-# ========== BUSINESS MESSAGE ==========
-@dp.message(F.business_connection_id.is_not(None))
-async def handle_business_message(message: types.Message):
-    try:
-        user_id = message.from_user.id
-        chat_id = message.chat.id
-        message_id = message.message_id
-        connection_id = message.business_connection_id
+# ========== ОБРАБОТЧИК ВСЕХ СООБЩЕНИЙ (ДИАГНОСТИКА) ==========
+@dp.message()
+async def catch_all_messages(message: types.Message):
+    """Ловит все сообщения для диагностики"""
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    text = message.text or "[НЕТ ТЕКСТА]"
+    connection_id = message.business_connection_id
+    
+    # ПРОВЕРЯЕМ BUSINESS CONNECTION ID
+    has_business = "✅" if connection_id else "❌"
+    
+    logger.info(f"📩 ВСЕ СООБЩЕНИЕ: user={user_id}, chat={chat_id}, has_business={has_business}, text={text[:50]}")
+    
+    # Если это бизнес-сообщение — логируем отдельно
+    if connection_id:
+        logger.info(f"🏢 БИЗНЕС СООБЩЕНИЕ: connection={connection_id}, text={text}")
         
-        if not is_admin(user_id):
-            return
-        
-        if not connection_id:
-            connection_id = business_connections.get(str(user_id))
-        
-        if is_banned(user_id):
-            if str(user_id) not in blocked_notified:
-                ban_info = get_ban_info(user_id)
-                reason = ban_info.get("reason", "Не указана") if ban_info else "Не указана"
-                await send_to_business_chat(
-                    chat_id,
-                    f"⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ!\n\n📌 Причина: {reason}",
-                    connection_id
+        # Проверяем, зарегистрировано ли подключение
+        if str(user_id) in business_connections:
+            logger.info(f"✅ Бизнес-подключение найдено в словаре для user={user_id}")
+        else:
+            logger.info(f"❌ Бизнес-подключение НЕ найдено в словаре для user={user_id}")
+            
+            # Добавляем в словарь если админ
+            if is_admin(user_id):
+                business_connections[str(user_id)] = connection_id
+                logger.info(f"✅ Добавил бизнес-подключение в словарь для user={user_id}")
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=f"✅ БОТ ПОДКЛЮЧЕН К БИЗНЕС-АККАУНТУ!\n\n🆔 ID: {user_id}\n📌 Команды работают в чатах с собеседниками!\n🔥 Введите .help для списка команд"
                 )
-                blocked_notified[str(user_id)] = True
+    
+    # Пропускаем команды / (они обрабатываются отдельно)
+    if text and text.startswith('/'):
+        logger.info(f"⏭️ Команда / пропущена (обрабатывается отдельно)")
+        return
+    
+    # Если сообщение с бизнес-коннектом и начинается с .
+    if connection_id and text and text.startswith('.'):
+        logger.info(f"🎯 ОБНАРУЖЕНА БИЗНЕС-КОМАНДА: {text}")
+        
+        # Проверяем админа
+        if not is_admin(user_id):
+            logger.info(f"⛔ Не админ: {user_id}")
+            await send_to_business_chat(chat_id, "❌ У вас нет прав!", connection_id)
             return
         
-        if is_tech_mode():
-            tech_info = get_tech_info()
-            await send_to_business_chat(
-                chat_id,
-                f"🛠️ БОТ НА ТЕХНИЧЕСКИХ РАБОТАХ\n\n🕐 ВРЕМЯ: {tech_info.get('expires_at', 'Неизвестно')}",
-                connection_id
-            )
-            return
-        
-        if not message.text:
-            return
-        
-        text = message.text.strip()
-        
-        if not text.startswith('.'):
-            return
-        
-        await delete_business_message(chat_id, message_id, connection_id)
+        # Обрабатываем команду
+        await handle_business_command(message, text, connection_id)
+        return
+    
+    # Если сообщение без бизнес-коннекта (личка) и не начинается с /
+    if not connection_id and text and not text.startswith('/'):
+        logger.info(f"💬 ЛИЧНОЕ СООБЩЕНИЕ: {text[:50]}")
+        # Обрабатываем как личное сообщение
+        await handle_private_message(message)
+        return
+
+# ========== ОБРАБОТЧИК БИЗНЕС-КОМАНД ==========
+async def handle_business_command(message: types.Message, text: str, connection_id: str):
+    """Обрабатывает бизнес-команды"""
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    
+    logger.info(f"⚙️ Обработка бизнес-команды: {text}")
+    
+    try:
+        await delete_business_message(chat_id, message.message_id, connection_id)
         
         # .help
         if text.lower() == '.help':
+            logger.info("📚 .help команда")
             await send_to_business_chat(chat_id, HELP_TEXT, connection_id)
             return
         
         # .stop
         if text.lower().startswith('.stop'):
+            logger.info("🛑 .stop команда")
             parts = text.split(maxsplit=2)
             if len(parts) < 3:
                 await send_to_business_chat(chat_id, "❌ .stop [run/bot/max] [max]", connection_id)
@@ -712,6 +742,7 @@ async def handle_business_message(message: types.Message):
         
         # .idlist
         if text.lower() == '.idlist':
+            logger.info("👥 .idlist команда")
             users = get_all_users()
             if not users:
                 await send_to_business_chat(chat_id, "📊 Список пользователей пуст", connection_id)
@@ -724,6 +755,7 @@ async def handle_business_message(message: types.Message):
         
         # .logs
         if text.lower().startswith('.logs'):
+            logger.info("📋 .logs команда")
             parts = text.split(maxsplit=2)
             if len(parts) < 2:
                 await send_to_business_chat(chat_id, "❌ .logs [ID] [кол-во]", connection_id)
@@ -745,6 +777,7 @@ async def handle_business_message(message: types.Message):
         
         # .ban
         if text.lower().startswith('.ban'):
+            logger.info("🔨 .ban команда")
             parts = text.split(maxsplit=3)
             if len(parts) < 3:
                 await send_to_business_chat(chat_id, "❌ .ban [ID] [время] [причина]", connection_id)
@@ -767,6 +800,7 @@ async def handle_business_message(message: types.Message):
         
         # .unban
         if text.lower().startswith('.unban'):
+            logger.info("🔓 .unban команда")
             parts = text.split(maxsplit=2)
             if len(parts) < 2:
                 await send_to_business_chat(chat_id, "❌ .unban [ID] [причина]", connection_id)
@@ -785,12 +819,14 @@ async def handle_business_message(message: types.Message):
         
         # .key
         if text.lower() == '.key':
+            logger.info("🔑 .key команда")
             key = create_session_key()
             await send_to_business_chat(chat_id, f"🔑 Ваш ключ:\n\n`{key}`\n\n⏱ Действует 10 часов", connection_id)
             return
         
         # .tex on
         if text.lower().startswith('.tex on'):
+            logger.info("🛠️ .tex on команда")
             parts = text.split(maxsplit=2)
             if len(parts) < 3:
                 await send_to_business_chat(chat_id, "❌ .tex on [время]", connection_id)
@@ -802,12 +838,14 @@ async def handle_business_message(message: types.Message):
             return
         
         if text.lower() == '.tex off':
+            logger.info("🛠️ .tex off команда")
             set_tech_mode(False, None)
             await send_to_business_chat(chat_id, "✅ ТЕХ-РАБОТЫ ВЫКЛЮЧЕНЫ", connection_id)
             return
         
         # .whois
         if text.lower().startswith('.whois'):
+            logger.info("🔍 .whois команда")
             parts = text.split(maxsplit=2)
             if len(parts) < 3:
                 await send_to_business_chat(chat_id, "❌ .whois ip [IP] или .whois n [номер] или .whois qz [@username]", connection_id)
@@ -852,8 +890,13 @@ async def handle_business_message(message: types.Message):
                 await edit_business_message(chat_id, loading.message_id, "❌ .whois ip [IP] или .whois n [номер] или .whois qz [@username]", connection_id)
             return
         
+        # Если команда не распознана
+        logger.info(f"❓ Неизвестная бизнес-команда: {text}")
+        await send_to_business_chat(chat_id, f"❓ Неизвестная команда\n\n📌 Введи .help для списка команд", connection_id)
+        
     except Exception as e:
-        logger.error(f"❌ Ошибка бизнес-сообщения: {e}")
+        logger.error(f"❌ Ошибка обработки бизнес-команды: {e}")
+        await send_to_business_chat(chat_id, f"❌ Ошибка: {e}", connection_id)
 
 # ========== ТЕКСТ ПОМОЩИ ==========
 HELP_TEXT = """📚 СПИСОК КОМАНД
@@ -891,6 +934,7 @@ HELP_TEXT = """📚 СПИСОК КОМАНД
 @dp.message(Command("start"))
 async def start(message: types.Message):
     user_id = message.from_user.id
+    logger.info(f"📩 /start от {user_id}")
     
     if user_id in processing_commands and processing_commands[user_id] == "start":
         return
@@ -918,6 +962,7 @@ async def start(message: types.Message):
 @dp.message(Command("help"))
 async def help_command(message: types.Message):
     user_id = message.from_user.id
+    logger.info(f"📩 /help от {user_id}")
     if is_banned(user_id):
         if str(user_id) not in blocked_notified:
             ban_info = get_ban_info(user_id)
@@ -930,6 +975,7 @@ async def help_command(message: types.Message):
 @dp.message(Command("stop"))
 async def stop_command(message: types.Message):
     user_id = message.from_user.id
+    logger.info(f"📩 /stop от {user_id}")
     if not is_admin(user_id):
         await message.answer("❌ У вас нет прав!")
         return
@@ -952,6 +998,7 @@ async def stop_command(message: types.Message):
 @dp.message(Command("whois"))
 async def whois_command(message: types.Message):
     user_id = message.from_user.id
+    logger.info(f"📩 /whois от {user_id}")
     if is_banned(user_id):
         if str(user_id) not in blocked_notified:
             ban_info = get_ban_info(user_id)
@@ -968,6 +1015,7 @@ async def whois_command(message: types.Message):
 @dp.message(Command("idlist"))
 async def idlist_command(message: types.Message):
     user_id = message.from_user.id
+    logger.info(f"📩 /idlist от {user_id}")
     if not is_admin(user_id):
         await message.answer("❌ У вас нет прав!")
         return
@@ -983,6 +1031,7 @@ async def idlist_command(message: types.Message):
 @dp.message(Command("logs"))
 async def logs_command(message: types.Message):
     user_id = message.from_user.id
+    logger.info(f"📩 /logs от {user_id}")
     if not is_admin(user_id):
         await message.answer("❌ У вас нет прав!")
         return
@@ -1007,6 +1056,7 @@ async def logs_command(message: types.Message):
 @dp.message(Command("ban"))
 async def ban_command(message: types.Message):
     user_id = message.from_user.id
+    logger.info(f"📩 /ban от {user_id}")
     if not is_admin(user_id):
         await message.answer("❌ У вас нет прав!")
         return
@@ -1032,6 +1082,7 @@ async def ban_command(message: types.Message):
 @dp.message(Command("unban"))
 async def unban_command(message: types.Message):
     user_id = message.from_user.id
+    logger.info(f"📩 /unban от {user_id}")
     if not is_admin(user_id):
         await message.answer("❌ У вас нет прав!")
         return
@@ -1053,6 +1104,7 @@ async def unban_command(message: types.Message):
 @dp.message(Command("key"))
 async def key_command(message: types.Message):
     user_id = message.from_user.id
+    logger.info(f"📩 /key от {user_id}")
     if not is_admin(user_id):
         await message.answer("❌ У вас нет прав!")
         return
@@ -1062,6 +1114,7 @@ async def key_command(message: types.Message):
 @dp.message(Command("chkban"))
 async def chkban_command(message: types.Message):
     user_id = message.from_user.id
+    logger.info(f"📩 /chkban от {user_id}")
     if not is_admin(user_id):
         await message.answer("❌ У вас нет прав!")
         return
@@ -1079,6 +1132,7 @@ async def chkban_command(message: types.Message):
 @dp.message(Command("tex"))
 async def tex_command(message: types.Message):
     user_id = message.from_user.id
+    logger.info(f"📩 /tex от {user_id}")
     if not is_admin(user_id):
         await message.answer("❌ У вас нет прав!")
         return
@@ -1105,6 +1159,7 @@ async def tex_command(message: types.Message):
 @dp.callback_query()
 async def handle_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
+    logger.info(f"📩 Callback от {user_id}: {callback.data}")
     
     if is_banned(user_id):
         if str(user_id) not in blocked_notified:
@@ -1130,9 +1185,9 @@ async def handle_callback(callback: types.CallbackQuery):
         await callback.message.answer("👤 ВВЕДИТЕ @USERNAME\n📌 Пример: @username")
     await callback.answer()
 
-# ========== ЛИЧНЫЕ СООБЩЕНИЯ (ТОЛЬКО ДЛЯ ЛИЧКИ) ==========
-@dp.message(F.business_connection_id.is_(None))
+# ========== ЛИЧНЫЕ СООБЩЕНИЯ ==========
 async def handle_private_message(message: types.Message):
+    """Обрабатывает личные сообщения (без бизнес-коннекта)"""
     user_id = message.from_user.id
     
     if is_banned(user_id):
