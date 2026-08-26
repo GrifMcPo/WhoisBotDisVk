@@ -11,15 +11,11 @@ from phonenumbers import carrier, geocoder, timezone, number_type
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BusinessConnection
 from aiogram import F
 import aiohttp
 
-# ===== НАСТРОЙКА ЛОГИРОВАНИЯ =====
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # ===== СЕКРЕТЫ =====
@@ -645,75 +641,102 @@ def get_main_keyboard():
         [InlineKeyboardButton(text="👤 ПРОБИВ ЮЗЕРА", callback_data="probe_user")],
     ])
 
-# ========== ОБРАБОТЧИК ВСЕХ СООБЩЕНИЙ (ДИАГНОСТИКА) ==========
-@dp.message()
-async def catch_all_messages(message: types.Message):
-    """Ловит все сообщения для диагностики"""
-    user_id = message.from_user.id
-    chat_id = message.chat.id
-    text = message.text or "[НЕТ ТЕКСТА]"
-    connection_id = message.business_connection_id
+# ========== BUSINESS CONNECTION (ДЛЯ AIOGRAM 3.5.0) ==========
+@dp.business_connection()
+async def handle_business_connection(connection: BusinessConnection):
+    """Обработчик подключения к бизнес-аккаунту"""
+    logger.info(f"🏢 BUSINESS CONNECTION ПОЛУЧЕНА!")
+    logger.info(f"   Connection ID: {connection.id}")
+    logger.info(f"   User ID: {connection.user.id}")
+    logger.info(f"   Username: {connection.user.username}")
     
-    # ПРОВЕРЯЕМ BUSINESS CONNECTION ID
-    has_business = "✅" if connection_id else "❌"
-    
-    logger.info(f"📩 ВСЕ СООБЩЕНИЕ: user={user_id}, chat={chat_id}, has_business={has_business}, text={text[:50]}")
-    
-    # Если это бизнес-сообщение — логируем отдельно
-    if connection_id:
-        logger.info(f"🏢 БИЗНЕС СООБЩЕНИЕ: connection={connection_id}, text={text}")
+    if connection.user:
+        user_id = connection.user.id
+        connection_id = connection.id
+        username = connection.user.username or "Нет юзернейма"
         
-        # Проверяем, зарегистрировано ли подключение
-        if str(user_id) in business_connections:
-            logger.info(f"✅ Бизнес-подключение найдено в словаре для user={user_id}")
-        else:
-            logger.info(f"❌ Бизнес-подключение НЕ найдено в словаре для user={user_id}")
-            
-            # Добавляем в словарь если админ
-            if is_admin(user_id):
-                business_connections[str(user_id)] = connection_id
-                logger.info(f"✅ Добавил бизнес-подключение в словарь для user={user_id}")
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=f"✅ БОТ ПОДКЛЮЧЕН К БИЗНЕС-АККАУНТУ!\n\n🆔 ID: {user_id}\n📌 Команды работают в чатах с собеседниками!\n🔥 Введите .help для списка команд"
-                )
-    
-    # Пропускаем команды / (они обрабатываются отдельно)
-    if text and text.startswith('/'):
-        logger.info(f"⏭️ Команда / пропущена (обрабатывается отдельно)")
-        return
-    
-    # Если сообщение с бизнес-коннектом и начинается с .
-    if connection_id and text and text.startswith('.'):
-        logger.info(f"🎯 ОБНАРУЖЕНА БИЗНЕС-КОМАНДА: {text}")
-        
-        # Проверяем админа
         if not is_admin(user_id):
             logger.info(f"⛔ Не админ: {user_id}")
-            await send_to_business_chat(chat_id, "❌ У вас нет прав!", connection_id)
             return
         
-        # Обрабатываем команду
-        await handle_business_command(message, text, connection_id)
-        return
-    
-    # Если сообщение без бизнес-коннекта (личка) и не начинается с /
-    if not connection_id and text and not text.startswith('/'):
-        logger.info(f"💬 ЛИЧНОЕ СООБЩЕНИЕ: {text[:50]}")
-        # Обрабатываем как личное сообщение
-        await handle_private_message(message)
-        return
+        business_connections[str(user_id)] = connection_id
+        
+        logger.info(f"✅ BUSINESS CONNECTION сохранена: @{username} (ID: {user_id})")
+        logger.info(f"   Словарь business_connections: {business_connections}")
+        
+        await bot.send_message(
+            chat_id=user_id,
+            text=f"✅ БОТ ПОДКЛЮЧЕН К БИЗНЕС-АККАУНТУ!\n\n🆔 ID: {user_id}\n📌 Команды работают в чатах с собеседниками!\n🔥 Введите .help для списка команд"
+        )
 
-# ========== ОБРАБОТЧИК БИЗНЕС-КОМАНД ==========
-async def handle_business_command(message: types.Message, text: str, connection_id: str):
-    """Обрабатывает бизнес-команды"""
-    user_id = message.from_user.id
-    chat_id = message.chat.id
-    
-    logger.info(f"⚙️ Обработка бизнес-команды: {text}")
+# ========== BUSINESS MESSAGE (ДЛЯ AIOGRAM 3.5.0) ==========
+@dp.business_message()
+async def handle_business_message(message: types.Message):
+    """Обработчик бизнес-сообщений"""
+    logger.info(f"📩 BUSINESS MESSAGE ПОЛУЧЕНА!")
+    logger.info(f"   Chat ID: {message.chat.id}")
+    logger.info(f"   User ID: {message.from_user.id}")
+    logger.info(f"   Text: {message.text}")
+    logger.info(f"   Business Connection ID: {message.business_connection_id}")
     
     try:
-        await delete_business_message(chat_id, message.message_id, connection_id)
+        user_id = message.from_user.id
+        chat_id = message.chat.id
+        message_id = message.message_id
+        connection_id = message.business_connection_id
+        
+        logger.info(f"   is_admin: {is_admin(user_id)}")
+        
+        if not is_admin(user_id):
+            logger.info(f"⛔ Не админ: {user_id}")
+            return
+        
+        if not connection_id:
+            connection_id = business_connections.get(str(user_id))
+            logger.info(f"   Connection ID из словаря: {connection_id}")
+        
+        # Проверяем бан
+        if is_banned(user_id):
+            logger.info(f"⛔ Пользователь забанен: {user_id}")
+            if str(user_id) not in blocked_notified:
+                ban_info = get_ban_info(user_id)
+                reason = ban_info.get("reason", "Не указана") if ban_info else "Не указана"
+                await send_to_business_chat(
+                    chat_id,
+                    f"⛔ ВАС ЗАБЛОКИРОВАЛИ В БОТЕ!\n\n📌 Причина: {reason}",
+                    connection_id
+                )
+                blocked_notified[str(user_id)] = True
+            return
+        
+        # Проверяем техработы
+        if is_tech_mode():
+            logger.info("🛠️ Техработы включены")
+            tech_info = get_tech_info()
+            await send_to_business_chat(
+                chat_id,
+                f"🛠️ БОТ НА ТЕХНИЧЕСКИХ РАБОТАХ\n\n🕐 ВРЕМЯ: {tech_info.get('expires_at', 'Неизвестно')}",
+                connection_id
+            )
+            return
+        
+        if not message.text:
+            logger.info("⏭️ Нет текста в сообщении")
+            return
+        
+        text = message.text.strip()
+        logger.info(f"📝 Текст: {text}")
+        
+        if not text.startswith('.'):
+            logger.info("⏭️ Не бизнес-команда (не начинается с .)")
+            return
+        
+        logger.info(f"🎯 ОБНАРУЖЕНА БИЗНЕС-КОМАНДА: {text}")
+        
+        # Удаляем сообщение
+        await delete_business_message(chat_id, message_id, connection_id)
+        
+        # ===== ОБРАБОТКА БИЗНЕС-КОМАНД =====
         
         # .help
         if text.lower() == '.help':
@@ -890,13 +913,13 @@ async def handle_business_command(message: types.Message, text: str, connection_
                 await edit_business_message(chat_id, loading.message_id, "❌ .whois ip [IP] или .whois n [номер] или .whois qz [@username]", connection_id)
             return
         
-        # Если команда не распознана
         logger.info(f"❓ Неизвестная бизнес-команда: {text}")
         await send_to_business_chat(chat_id, f"❓ Неизвестная команда\n\n📌 Введи .help для списка команд", connection_id)
         
     except Exception as e:
-        logger.error(f"❌ Ошибка обработки бизнес-команды: {e}")
-        await send_to_business_chat(chat_id, f"❌ Ошибка: {e}", connection_id)
+        logger.error(f"❌ Ошибка бизнес-сообщения: {e}")
+        import traceback
+        traceback.print_exc()
 
 # ========== ТЕКСТ ПОМОЩИ ==========
 HELP_TEXT = """📚 СПИСОК КОМАНД
@@ -1186,9 +1209,16 @@ async def handle_callback(callback: types.CallbackQuery):
     await callback.answer()
 
 # ========== ЛИЧНЫЕ СООБЩЕНИЯ ==========
+@dp.message()
 async def handle_private_message(message: types.Message):
-    """Обрабатывает личные сообщения (без бизнес-коннекта)"""
+    """Обрабатывает личные сообщения"""
     user_id = message.from_user.id
+    
+    # Пропускаем бизнес-сообщения (они обрабатываются отдельно)
+    if message.business_connection_id:
+        return
+    
+    logger.info(f"💬 Личное сообщение от {user_id}: {message.text}")
     
     if is_banned(user_id):
         if str(user_id) not in blocked_notified:
