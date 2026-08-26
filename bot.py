@@ -13,18 +13,19 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BusinessConnection
 from aiogram import F
+from supabase import create_client, Client
 import aiohttp
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ===== СЕКРЕТЫ =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 
-# ===== SUPABASE (HTTP КЛИЕНТ) =====
+# ===== SUPABASE (БИБЛИОТЕКА) =====
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://doidpainkowqiquvrzpg.supabase.co")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")  # service_role ключ!
 
 if not BOT_TOKEN:
     print("❌ Токен не найден!")
@@ -39,72 +40,11 @@ print("✅ SUPABASE_SERVICE_KEY найден!")
 print(f"🔗 Supabase URL: {SUPABASE_URL}")
 print("=" * 60)
 
-# ===== HTTP КЛИЕНТ ДЛЯ SUPABASE =====
-class SupabaseClient:
-    def __init__(self, url, key):
-        self.url = url.rstrip('/')
-        self.key = key
-        self.headers = {
-            "apikey": key,
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-            "Prefer": "return=representation"
-        }
-    
-    def table(self, name):
-        return SupabaseTable(self, name)
-
-class SupabaseTable:
-    def __init__(self, client, name):
-        self.client = client
-        self.name = name
-        self._select = "*"
-        self._filters = []
-        self._eq_filters = {}
-        self._order = None
-        self._limit = None
-    
-    def select(self, columns):
-        self._select = columns
-        return self
-    
-    def eq(self, column, value):
-        self._eq_filters[column] = value
-        return self
-    
-    def neq(self, column, value):
-        self._filters.append(f"{column}=neq.{value}")
-        return self
-    
-    def order(self, column, desc=False):
-        self._order = f"{column}.{'desc' if desc else 'asc'}"
-        return self
-    
-    def limit(self, count):
-        self._limit = count
-        return self
-    
-    def execute(self):
-        url = f"{self.client.url}/rest/v1/{self.name}"
-        params = {"select": self._select}
-        
-        for col, val in self._eq_filters.items():
-            params[col] = f"eq.{val}"
-        
-        if self._filters:
-            params["and"] = ",".join(self._filters)
-        if self._order:
-            params["order"] = self._order
-        if self._limit:
-            params["limit"] = self._limit
-        
-        response = requests.get(url, headers=self.client.headers, params=params)
-        return type('obj', (object,), {'data': response.json()})()
-
-supabase = SupabaseClient(SUPABASE_URL, SUPABASE_KEY)
-
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+# ===== ПОДКЛЮЧЕНИЕ К SUPABASE ЧЕРЕЗ БИБЛИОТЕКУ =====
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 business_connections = {}
 blocked_notified = {}
@@ -140,6 +80,7 @@ async def save_log_async(log_entry):
         username = log_entry.get("username", "Нет")
         full_name = log_entry.get("full_name", "Нет")
         
+        # Проверяем, есть ли пользователь
         existing = supabase.table("users").select("user_id").eq("user_id", user_id).execute()
         if not existing.data:
             supabase.table("users").insert({
@@ -148,7 +89,9 @@ async def save_log_async(log_entry):
                 "full_name": full_name,
                 "role": "user"
             }).execute()
+            logger.info(f"✅ Добавлен пользователь: {user_id} (@{username})")
         
+        # Сохраняем лог
         supabase.table("logs").insert({
             "user_id": user_id,
             "command": log_entry.get("command", ""),
@@ -156,23 +99,26 @@ async def save_log_async(log_entry):
             "username": username,
             "time": log_entry.get("time", get_msk_time())
         }).execute()
+        logger.info(f"✅ Лог сохранен: {log_entry.get('command', '')}")
         return True
     except Exception as e:
-        print(f"❌ Ошибка сохранения лога: {e}")
+        logger.error(f"❌ Ошибка сохранения лога: {e}")
         return False
 
 def get_logs_for_user(user_id, count=10):
     try:
         result = supabase.table("logs").select("*").eq("user_id", user_id).order("id", desc=True).limit(count).execute()
         return result.data
-    except:
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения логов: {e}")
         return []
 
 def get_all_users():
     try:
         result = supabase.table("users").select("user_id, username, full_name, role").order("id", desc=True).execute()
         return result.data
-    except:
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения пользователей: {e}")
         return []
 
 # --- БАНЫ ---
@@ -182,7 +128,9 @@ def add_ban(user_id, reason, admin_id, time_minutes=None):
         expires_at = (datetime.now() + timedelta(minutes=time_minutes)).isoformat()
     
     try:
+        # Удаляем старый бан
         supabase.table("bans").delete().eq("user_id", int(user_id)).execute()
+        # Создаем новый
         supabase.table("bans").insert({
             "user_id": int(user_id),
             "reason": reason,
@@ -192,8 +140,10 @@ def add_ban(user_id, reason, admin_id, time_minutes=None):
         }).execute()
         if str(user_id) in blocked_notified:
             del blocked_notified[str(user_id)]
+        logger.info(f"✅ Бан добавлен: {user_id}")
         return True
-    except:
+    except Exception as e:
+        logger.error(f"❌ Ошибка добавления бана: {e}")
         return False
 
 def remove_ban(user_id):
@@ -201,8 +151,10 @@ def remove_ban(user_id):
         supabase.table("bans").delete().eq("user_id", int(user_id)).execute()
         if str(user_id) in blocked_notified:
             del blocked_notified[str(user_id)]
+        logger.info(f"✅ Бан удален: {user_id}")
         return True
-    except:
+    except Exception as e:
+        logger.error(f"❌ Ошибка удаления бана: {e}")
         return False
 
 def is_banned(user_id):
@@ -220,7 +172,8 @@ def is_banned(user_id):
                     del blocked_notified[str(user_id)]
                 return False
         return True
-    except:
+    except Exception as e:
+        logger.error(f"❌ Ошибка проверки бана: {e}")
         return False
 
 def get_ban_info(user_id):
@@ -248,7 +201,8 @@ def get_ban_info(user_id):
             reason += " (НАВСЕГДА)"
         
         return data
-    except:
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения информации о бане: {e}")
         return None
 
 # --- КЛЮЧИ ---
@@ -263,7 +217,8 @@ def load_keys():
                 "expires_at": item["expires_at"]
             }
         return keys
-    except:
+    except Exception as e:
+        logger.error(f"❌ Ошибка загрузки ключей: {e}")
         return {}
 
 def save_keys(keys):
@@ -277,7 +232,8 @@ def save_keys(keys):
                 "expires_at": data["expires_at"]
             }).execute()
         return True
-    except:
+    except Exception as e:
+        logger.error(f"❌ Ошибка сохранения ключей: {e}")
         return False
 
 def generate_key():
@@ -304,7 +260,8 @@ def load_tech():
         if result.data:
             return result.data[0]
         return {"active": False, "expires_at": None}
-    except:
+    except Exception as e:
+        logger.error(f"❌ Ошибка загрузки tech: {e}")
         return {"active": False, "expires_at": None}
 
 def save_tech(data):
@@ -315,7 +272,8 @@ def save_tech(data):
             "expires_at": data.get("expires_at")
         }).execute()
         return True
-    except:
+    except Exception as e:
+        logger.error(f"❌ Ошибка сохранения tech: {e}")
         return False
 
 def is_tech_mode():
@@ -346,8 +304,8 @@ def is_admin(user_id):
         result = supabase.table("users").select("role").eq("user_id", user_id).execute()
         if result.data and result.data[0].get("role") == "admin":
             return True
-    except:
-        pass
+    except Exception as e:
+        logger.error(f"❌ Ошибка проверки админа: {e}")
     return user_id == ADMIN_ID
 
 # ========== ОСТАНОВКА РАННЕРОВ ==========
@@ -641,63 +599,42 @@ def get_main_keyboard():
         [InlineKeyboardButton(text="👤 ПРОБИВ ЮЗЕРА", callback_data="probe_user")],
     ])
 
-# ========== BUSINESS CONNECTION (ДЛЯ AIOGRAM 3.5.0) ==========
+# ========== BUSINESS CONNECTION ==========
 @dp.business_connection()
 async def handle_business_connection(connection: BusinessConnection):
-    """Обработчик подключения к бизнес-аккаунту"""
-    logger.info(f"🏢 BUSINESS CONNECTION ПОЛУЧЕНА!")
-    logger.info(f"   Connection ID: {connection.id}")
-    logger.info(f"   User ID: {connection.user.id}")
-    logger.info(f"   Username: {connection.user.username}")
-    
     if connection.user:
         user_id = connection.user.id
         connection_id = connection.id
         username = connection.user.username or "Нет юзернейма"
         
         if not is_admin(user_id):
-            logger.info(f"⛔ Не админ: {user_id}")
             return
         
         business_connections[str(user_id)] = connection_id
         
-        logger.info(f"✅ BUSINESS CONNECTION сохранена: @{username} (ID: {user_id})")
-        logger.info(f"   Словарь business_connections: {business_connections}")
+        logger.info(f"🔗 BUSINESS CONNECTION: @{username} (ID: {user_id})")
         
         await bot.send_message(
             chat_id=user_id,
             text=f"✅ БОТ ПОДКЛЮЧЕН К БИЗНЕС-АККАУНТУ!\n\n🆔 ID: {user_id}\n📌 Команды работают в чатах с собеседниками!\n🔥 Введите .help для списка команд"
         )
 
-# ========== BUSINESS MESSAGE (ДЛЯ AIOGRAM 3.5.0) ==========
+# ========== BUSINESS MESSAGE ==========
 @dp.business_message()
 async def handle_business_message(message: types.Message):
-    """Обработчик бизнес-сообщений"""
-    logger.info(f"📩 BUSINESS MESSAGE ПОЛУЧЕНА!")
-    logger.info(f"   Chat ID: {message.chat.id}")
-    logger.info(f"   User ID: {message.from_user.id}")
-    logger.info(f"   Text: {message.text}")
-    logger.info(f"   Business Connection ID: {message.business_connection_id}")
-    
     try:
         user_id = message.from_user.id
         chat_id = message.chat.id
         message_id = message.message_id
         connection_id = message.business_connection_id
         
-        logger.info(f"   is_admin: {is_admin(user_id)}")
-        
         if not is_admin(user_id):
-            logger.info(f"⛔ Не админ: {user_id}")
             return
         
         if not connection_id:
             connection_id = business_connections.get(str(user_id))
-            logger.info(f"   Connection ID из словаря: {connection_id}")
         
-        # Проверяем бан
         if is_banned(user_id):
-            logger.info(f"⛔ Пользователь забанен: {user_id}")
             if str(user_id) not in blocked_notified:
                 ban_info = get_ban_info(user_id)
                 reason = ban_info.get("reason", "Не указана") if ban_info else "Не указана"
@@ -709,9 +646,7 @@ async def handle_business_message(message: types.Message):
                 blocked_notified[str(user_id)] = True
             return
         
-        # Проверяем техработы
         if is_tech_mode():
-            logger.info("🛠️ Техработы включены")
             tech_info = get_tech_info()
             await send_to_business_chat(
                 chat_id,
@@ -721,32 +656,22 @@ async def handle_business_message(message: types.Message):
             return
         
         if not message.text:
-            logger.info("⏭️ Нет текста в сообщении")
             return
         
         text = message.text.strip()
-        logger.info(f"📝 Текст: {text}")
         
         if not text.startswith('.'):
-            logger.info("⏭️ Не бизнес-команда (не начинается с .)")
             return
         
-        logger.info(f"🎯 ОБНАРУЖЕНА БИЗНЕС-КОМАНДА: {text}")
-        
-        # Удаляем сообщение
         await delete_business_message(chat_id, message_id, connection_id)
-        
-        # ===== ОБРАБОТКА БИЗНЕС-КОМАНД =====
         
         # .help
         if text.lower() == '.help':
-            logger.info("📚 .help команда")
             await send_to_business_chat(chat_id, HELP_TEXT, connection_id)
             return
         
         # .stop
         if text.lower().startswith('.stop'):
-            logger.info("🛑 .stop команда")
             parts = text.split(maxsplit=2)
             if len(parts) < 3:
                 await send_to_business_chat(chat_id, "❌ .stop [run/bot/max] [max]", connection_id)
@@ -765,7 +690,6 @@ async def handle_business_message(message: types.Message):
         
         # .idlist
         if text.lower() == '.idlist':
-            logger.info("👥 .idlist команда")
             users = get_all_users()
             if not users:
                 await send_to_business_chat(chat_id, "📊 Список пользователей пуст", connection_id)
@@ -778,7 +702,6 @@ async def handle_business_message(message: types.Message):
         
         # .logs
         if text.lower().startswith('.logs'):
-            logger.info("📋 .logs команда")
             parts = text.split(maxsplit=2)
             if len(parts) < 2:
                 await send_to_business_chat(chat_id, "❌ .logs [ID] [кол-во]", connection_id)
@@ -800,7 +723,6 @@ async def handle_business_message(message: types.Message):
         
         # .ban
         if text.lower().startswith('.ban'):
-            logger.info("🔨 .ban команда")
             parts = text.split(maxsplit=3)
             if len(parts) < 3:
                 await send_to_business_chat(chat_id, "❌ .ban [ID] [время] [причина]", connection_id)
@@ -823,7 +745,6 @@ async def handle_business_message(message: types.Message):
         
         # .unban
         if text.lower().startswith('.unban'):
-            logger.info("🔓 .unban команда")
             parts = text.split(maxsplit=2)
             if len(parts) < 2:
                 await send_to_business_chat(chat_id, "❌ .unban [ID] [причина]", connection_id)
@@ -842,14 +763,12 @@ async def handle_business_message(message: types.Message):
         
         # .key
         if text.lower() == '.key':
-            logger.info("🔑 .key команда")
             key = create_session_key()
             await send_to_business_chat(chat_id, f"🔑 Ваш ключ:\n\n`{key}`\n\n⏱ Действует 10 часов", connection_id)
             return
         
         # .tex on
         if text.lower().startswith('.tex on'):
-            logger.info("🛠️ .tex on команда")
             parts = text.split(maxsplit=2)
             if len(parts) < 3:
                 await send_to_business_chat(chat_id, "❌ .tex on [время]", connection_id)
@@ -861,14 +780,12 @@ async def handle_business_message(message: types.Message):
             return
         
         if text.lower() == '.tex off':
-            logger.info("🛠️ .tex off команда")
             set_tech_mode(False, None)
             await send_to_business_chat(chat_id, "✅ ТЕХ-РАБОТЫ ВЫКЛЮЧЕНЫ", connection_id)
             return
         
         # .whois
         if text.lower().startswith('.whois'):
-            logger.info("🔍 .whois команда")
             parts = text.split(maxsplit=2)
             if len(parts) < 3:
                 await send_to_business_chat(chat_id, "❌ .whois ip [IP] или .whois n [номер] или .whois qz [@username]", connection_id)
@@ -913,13 +830,8 @@ async def handle_business_message(message: types.Message):
                 await edit_business_message(chat_id, loading.message_id, "❌ .whois ip [IP] или .whois n [номер] или .whois qz [@username]", connection_id)
             return
         
-        logger.info(f"❓ Неизвестная бизнес-команда: {text}")
-        await send_to_business_chat(chat_id, f"❓ Неизвестная команда\n\n📌 Введи .help для списка команд", connection_id)
-        
     except Exception as e:
         logger.error(f"❌ Ошибка бизнес-сообщения: {e}")
-        import traceback
-        traceback.print_exc()
 
 # ========== ТЕКСТ ПОМОЩИ ==========
 HELP_TEXT = """📚 СПИСОК КОМАНД
@@ -957,7 +869,6 @@ HELP_TEXT = """📚 СПИСОК КОМАНД
 @dp.message(Command("start"))
 async def start(message: types.Message):
     user_id = message.from_user.id
-    logger.info(f"📩 /start от {user_id}")
     
     if user_id in processing_commands and processing_commands[user_id] == "start":
         return
@@ -985,7 +896,6 @@ async def start(message: types.Message):
 @dp.message(Command("help"))
 async def help_command(message: types.Message):
     user_id = message.from_user.id
-    logger.info(f"📩 /help от {user_id}")
     if is_banned(user_id):
         if str(user_id) not in blocked_notified:
             ban_info = get_ban_info(user_id)
@@ -998,7 +908,6 @@ async def help_command(message: types.Message):
 @dp.message(Command("stop"))
 async def stop_command(message: types.Message):
     user_id = message.from_user.id
-    logger.info(f"📩 /stop от {user_id}")
     if not is_admin(user_id):
         await message.answer("❌ У вас нет прав!")
         return
@@ -1021,7 +930,6 @@ async def stop_command(message: types.Message):
 @dp.message(Command("whois"))
 async def whois_command(message: types.Message):
     user_id = message.from_user.id
-    logger.info(f"📩 /whois от {user_id}")
     if is_banned(user_id):
         if str(user_id) not in blocked_notified:
             ban_info = get_ban_info(user_id)
@@ -1038,7 +946,6 @@ async def whois_command(message: types.Message):
 @dp.message(Command("idlist"))
 async def idlist_command(message: types.Message):
     user_id = message.from_user.id
-    logger.info(f"📩 /idlist от {user_id}")
     if not is_admin(user_id):
         await message.answer("❌ У вас нет прав!")
         return
@@ -1054,7 +961,6 @@ async def idlist_command(message: types.Message):
 @dp.message(Command("logs"))
 async def logs_command(message: types.Message):
     user_id = message.from_user.id
-    logger.info(f"📩 /logs от {user_id}")
     if not is_admin(user_id):
         await message.answer("❌ У вас нет прав!")
         return
@@ -1079,7 +985,6 @@ async def logs_command(message: types.Message):
 @dp.message(Command("ban"))
 async def ban_command(message: types.Message):
     user_id = message.from_user.id
-    logger.info(f"📩 /ban от {user_id}")
     if not is_admin(user_id):
         await message.answer("❌ У вас нет прав!")
         return
@@ -1105,7 +1010,6 @@ async def ban_command(message: types.Message):
 @dp.message(Command("unban"))
 async def unban_command(message: types.Message):
     user_id = message.from_user.id
-    logger.info(f"📩 /unban от {user_id}")
     if not is_admin(user_id):
         await message.answer("❌ У вас нет прав!")
         return
@@ -1127,7 +1031,6 @@ async def unban_command(message: types.Message):
 @dp.message(Command("key"))
 async def key_command(message: types.Message):
     user_id = message.from_user.id
-    logger.info(f"📩 /key от {user_id}")
     if not is_admin(user_id):
         await message.answer("❌ У вас нет прав!")
         return
@@ -1137,7 +1040,6 @@ async def key_command(message: types.Message):
 @dp.message(Command("chkban"))
 async def chkban_command(message: types.Message):
     user_id = message.from_user.id
-    logger.info(f"📩 /chkban от {user_id}")
     if not is_admin(user_id):
         await message.answer("❌ У вас нет прав!")
         return
@@ -1155,7 +1057,6 @@ async def chkban_command(message: types.Message):
 @dp.message(Command("tex"))
 async def tex_command(message: types.Message):
     user_id = message.from_user.id
-    logger.info(f"📩 /tex от {user_id}")
     if not is_admin(user_id):
         await message.answer("❌ У вас нет прав!")
         return
@@ -1182,7 +1083,6 @@ async def tex_command(message: types.Message):
 @dp.callback_query()
 async def handle_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
-    logger.info(f"📩 Callback от {user_id}: {callback.data}")
     
     if is_banned(user_id):
         if str(user_id) not in blocked_notified:
@@ -1211,14 +1111,11 @@ async def handle_callback(callback: types.CallbackQuery):
 # ========== ЛИЧНЫЕ СООБЩЕНИЯ ==========
 @dp.message()
 async def handle_private_message(message: types.Message):
-    """Обрабатывает личные сообщения"""
     user_id = message.from_user.id
     
-    # Пропускаем бизнес-сообщения (они обрабатываются отдельно)
+    # Пропускаем бизнес-сообщения
     if message.business_connection_id:
         return
-    
-    logger.info(f"💬 Личное сообщение от {user_id}: {message.text}")
     
     if is_banned(user_id):
         if str(user_id) not in blocked_notified:
@@ -1288,7 +1185,7 @@ async def handle_private_message(message: types.Message):
 # ========== ЗАПУСК ==========
 async def main():
     print("=" * 60)
-    print("🔥 БОТ ЗАПУЩЕН С SUPABASE!")
+    print("🔥 БОТ ЗАПУЩЕН С SUPABASE (БИБЛИОТЕКА)!")
     print(f"👤 АДМИН: {ADMIN_ID}")
     print(f"📁 Supabase: {SUPABASE_URL}")
     print("📌 Команды с / — в личке бота")
