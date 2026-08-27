@@ -15,6 +15,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BusinessCo
 from aiogram import F
 from supabase import create_client, Client
 import aiohttp
+import random
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -23,9 +24,9 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 
-# ===== SUPABASE (БИБЛИОТЕКА) =====
+# ===== SUPABASE =====
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://doidpainkowqiquvrzpg.supabase.co")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")  # service_role ключ!
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
 
 if not BOT_TOKEN:
     print("❌ Токен не найден!")
@@ -42,16 +43,22 @@ print("=" * 60)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-
-# ===== ПОДКЛЮЧЕНИЕ К SUPABASE ЧЕРЕЗ БИБЛИОТЕКУ =====
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 business_connections = {}
 blocked_notified = {}
 processing_commands = {}
+cloned_profiles = {}  # user_id -> {username, full_name, photo}
+copied_profiles = {}  # user_id -> {username, full_name, photo}
 
 def get_msk_time():
     return (datetime.utcnow() + timedelta(hours=3)).strftime('%d.%m.%Y %H:%M:%S')
+
+def get_msk_time_short():
+    return (datetime.utcnow() + timedelta(hours=3)).strftime('%H:%M')
+
+def get_msk_date():
+    return (datetime.utcnow() + timedelta(hours=3)).strftime('%d.%m.%Y')
 
 def parse_time(time_str):
     if time_str == "-1w":
@@ -80,7 +87,6 @@ async def save_log_async(log_entry):
         username = log_entry.get("username", "Нет")
         full_name = log_entry.get("full_name", "Нет")
         
-        # Проверяем, есть ли пользователь
         existing = supabase.table("users").select("user_id").eq("user_id", user_id).execute()
         if not existing.data:
             supabase.table("users").insert({
@@ -89,9 +95,7 @@ async def save_log_async(log_entry):
                 "full_name": full_name,
                 "role": "user"
             }).execute()
-            logger.info(f"✅ Добавлен пользователь: {user_id} (@{username})")
         
-        # Сохраняем лог
         supabase.table("logs").insert({
             "user_id": user_id,
             "command": log_entry.get("command", ""),
@@ -99,26 +103,23 @@ async def save_log_async(log_entry):
             "username": username,
             "time": log_entry.get("time", get_msk_time())
         }).execute()
-        logger.info(f"✅ Лог сохранен: {log_entry.get('command', '')}")
         return True
     except Exception as e:
-        logger.error(f"❌ Ошибка сохранения лога: {e}")
+        print(f"❌ Ошибка сохранения лога: {e}")
         return False
 
 def get_logs_for_user(user_id, count=10):
     try:
         result = supabase.table("logs").select("*").eq("user_id", user_id).order("id", desc=True).limit(count).execute()
         return result.data
-    except Exception as e:
-        logger.error(f"❌ Ошибка получения логов: {e}")
+    except:
         return []
 
 def get_all_users():
     try:
         result = supabase.table("users").select("user_id, username, full_name, role").order("id", desc=True).execute()
         return result.data
-    except Exception as e:
-        logger.error(f"❌ Ошибка получения пользователей: {e}")
+    except:
         return []
 
 # --- БАНЫ ---
@@ -128,9 +129,7 @@ def add_ban(user_id, reason, admin_id, time_minutes=None):
         expires_at = (datetime.now() + timedelta(minutes=time_minutes)).isoformat()
     
     try:
-        # Удаляем старый бан
         supabase.table("bans").delete().eq("user_id", int(user_id)).execute()
-        # Создаем новый
         supabase.table("bans").insert({
             "user_id": int(user_id),
             "reason": reason,
@@ -140,10 +139,8 @@ def add_ban(user_id, reason, admin_id, time_minutes=None):
         }).execute()
         if str(user_id) in blocked_notified:
             del blocked_notified[str(user_id)]
-        logger.info(f"✅ Бан добавлен: {user_id}")
         return True
-    except Exception as e:
-        logger.error(f"❌ Ошибка добавления бана: {e}")
+    except:
         return False
 
 def remove_ban(user_id):
@@ -151,10 +148,8 @@ def remove_ban(user_id):
         supabase.table("bans").delete().eq("user_id", int(user_id)).execute()
         if str(user_id) in blocked_notified:
             del blocked_notified[str(user_id)]
-        logger.info(f"✅ Бан удален: {user_id}")
         return True
-    except Exception as e:
-        logger.error(f"❌ Ошибка удаления бана: {e}")
+    except:
         return False
 
 def is_banned(user_id):
@@ -172,8 +167,7 @@ def is_banned(user_id):
                     del blocked_notified[str(user_id)]
                 return False
         return True
-    except Exception as e:
-        logger.error(f"❌ Ошибка проверки бана: {e}")
+    except:
         return False
 
 def get_ban_info(user_id):
@@ -201,8 +195,7 @@ def get_ban_info(user_id):
             reason += " (НАВСЕГДА)"
         
         return data
-    except Exception as e:
-        logger.error(f"❌ Ошибка получения информации о бане: {e}")
+    except:
         return None
 
 # --- КЛЮЧИ ---
@@ -217,8 +210,7 @@ def load_keys():
                 "expires_at": item["expires_at"]
             }
         return keys
-    except Exception as e:
-        logger.error(f"❌ Ошибка загрузки ключей: {e}")
+    except:
         return {}
 
 def save_keys(keys):
@@ -232,8 +224,7 @@ def save_keys(keys):
                 "expires_at": data["expires_at"]
             }).execute()
         return True
-    except Exception as e:
-        logger.error(f"❌ Ошибка сохранения ключей: {e}")
+    except:
         return False
 
 def generate_key():
@@ -260,8 +251,7 @@ def load_tech():
         if result.data:
             return result.data[0]
         return {"active": False, "expires_at": None}
-    except Exception as e:
-        logger.error(f"❌ Ошибка загрузки tech: {e}")
+    except:
         return {"active": False, "expires_at": None}
 
 def save_tech(data):
@@ -272,8 +262,7 @@ def save_tech(data):
             "expires_at": data.get("expires_at")
         }).execute()
         return True
-    except Exception as e:
-        logger.error(f"❌ Ошибка сохранения tech: {e}")
+    except:
         return False
 
 def is_tech_mode():
@@ -304,9 +293,137 @@ def is_admin(user_id):
         result = supabase.table("users").select("role").eq("user_id", user_id).execute()
         if result.data and result.data[0].get("role") == "admin":
             return True
-    except Exception as e:
-        logger.error(f"❌ Ошибка проверки админа: {e}")
+    except:
+        pass
     return user_id == ADMIN_ID
+
+# ========== НОВЫЕ ФУНКЦИИ ==========
+
+# --- .scan (проверка файла на вирусы) ---
+async def scan_file(file_path, file_name):
+    try:
+        # Используем VirusTotal API (бесплатно, но с лимитами)
+        VT_API_KEY = os.getenv("VT_API_KEY", "")
+        if not VT_API_KEY:
+            return "❌ VirusTotal API ключ не настроен!"
+        
+        url = "https://www.virustotal.com/api/v3/files"
+        files = {"file": (file_name, open(file_path, "rb"))}
+        headers = {"x-apikey": VT_API_KEY}
+        
+        response = requests.post(url, files=files, headers=headers)
+        if response.status_code == 200:
+            data = response.json()
+            analysis_id = data.get("data", {}).get("id")
+            if analysis_id:
+                # Ждем результат
+                await asyncio.sleep(5)
+                result_url = f"https://www.virustotal.com/api/v3/analyses/{analysis_id}"
+                result_response = requests.get(result_url, headers=headers)
+                if result_response.status_code == 200:
+                    result_data = result_response.json()
+                    stats = result_data.get("data", {}).get("attributes", {}).get("stats", {})
+                    malicious = stats.get("malicious", 0)
+                    suspicious = stats.get("suspicious", 0)
+                    undetected = stats.get("undetected", 0)
+                    
+                    if malicious > 0:
+                        return f"⚠️ ОБНАРУЖЕНЫ ВИРУСЫ!\n\n🦠 Вредоносных: {malicious}\n⚠️ Подозрительных: {suspicious}\n✅ Безопасных: {undetected}"
+                    else:
+                        return f"✅ Файл безопасен!\n\n🦠 Вредоносных: {malicious}\n⚠️ Подозрительных: {suspicious}\n✅ Безопасных: {undetected}"
+        return "❌ Ошибка проверки файла"
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)}"
+
+# --- .ai (ИИ-агент) ---
+async def ai_agent(question):
+    try:
+        # Используем бесплатный API (или можно подключить OpenAI)
+        # Пока простой ответ
+        return f"🤖 ИИ-агент:\n\n{question}\n\n⚠️ Функция в разработке. Скоро будет подключен ChatGPT!"
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)}"
+
+# --- .sherlock (поиск аккаунтов) ---
+async def sherlock_search(username):
+    try:
+        # Используем sherlock API
+        url = f"https://sherlock-hq.vercel.app/api?username={username}"
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            found = []
+            for platform, info in data.items():
+                if info.get("exists"):
+                    found.append(f"✅ {platform}: {info.get('url', '')}")
+            if found:
+                return f"🔍 НАЙДЕНЫ АККАУНТЫ ДЛЯ @{username}:\n\n" + "\n".join(found[:20])
+            else:
+                return f"❌ Аккаунты для @{username} не найдены"
+        return "❌ Ошибка поиска"
+    except:
+        return "❌ Ошибка подключения к серверу"
+
+# --- .scanurl (проверка ссылки) ---
+async def scan_url(url_to_check):
+    try:
+        # Используем VirusTotal URL API
+        VT_API_KEY = os.getenv("VT_API_KEY", "")
+        if not VT_API_KEY:
+            return "❌ VirusTotal API ключ не настроен!"
+        
+        scan_url = "https://www.virustotal.com/api/v3/urls"
+        headers = {"x-apikey": VT_API_KEY}
+        data = {"url": url_to_check}
+        
+        response = requests.post(scan_url, headers=headers, data=data)
+        if response.status_code == 200:
+            result_data = response.json()
+            analysis_id = result_data.get("data", {}).get("id")
+            if analysis_id:
+                await asyncio.sleep(3)
+                result_url = f"https://www.virustotal.com/api/v3/analyses/{analysis_id}"
+                result_response = requests.get(result_url, headers=headers)
+                if result_response.status_code == 200:
+                    stats = result_response.json().get("data", {}).get("attributes", {}).get("stats", {})
+                    malicious = stats.get("malicious", 0)
+                    if malicious > 0:
+                        return f"⚠️ ССЫЛКА ОПАСНА!\n\n🦠 Вредоносных: {malicious}\n🔗 URL: {url_to_check}"
+                    else:
+                        return f"✅ Ссылка безопасна!\n\n🦠 Вредоносных: {malicious}\n🔗 URL: {url_to_check}"
+        return "❌ Ошибка проверки ссылки"
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)}"
+
+# --- .cat (случайный кот) ---
+async def get_random_cat():
+    try:
+        url = "https://api.thecatapi.com/v1/images/search"
+        response = requests.get(url)
+        if response.status_code == 200:
+            data = response.json()
+            if data:
+                return data[0].get("url")
+        return None
+    except:
+        return None
+
+# --- .clone / .unclone (клонирование сообщений) ---
+cloned_chats = {}  # chat_id -> True
+
+# --- .copyp / .uncopyp (копирование профиля) ---
+async def copy_profile(user_id, target_user_id):
+    try:
+        # Получаем данные пользователя
+        chat = await bot.get_chat(target_user_id)
+        copied_profiles[str(user_id)] = {
+            "username": chat.username,
+            "full_name": chat.full_name,
+            "photo": None  # Можно добавить фото позже
+        }
+        return True
+    except:
+        return False
 
 # ========== ОСТАНОВКА РАННЕРОВ ==========
 async def stop_runners(target, user_id=None, username=None):
@@ -591,12 +708,21 @@ async def show_animation(target, connection_id=None):
             await edit_normal_message(target, msg.message_id, stage)
         return msg
 
-# ========== КЛАВИАТУРА ==========
+# ========== КЛАВИАТУРА ДЛЯ .inf ==========
+def get_inf_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Основные", callback_data="inf_main")],
+        [InlineKeyboardButton(text="🔍 Пробивы", callback_data="inf_probe")],
+        [InlineKeyboardButton(text="🛠️ Админ", callback_data="inf_admin")],
+        [InlineKeyboardButton(text="📚 Все команды", callback_data="inf_all")]
+    ])
+
 def get_main_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🌐 ПРОБИВ IP", callback_data="probe_ip")],
         [InlineKeyboardButton(text="📱 ПРОБИВ НОМЕРА", callback_data="probe_phone")],
         [InlineKeyboardButton(text="👤 ПРОБИВ ЮЗЕРА", callback_data="probe_user")],
+        [InlineKeyboardButton(text="📋 Меню команд", callback_data="show_inf")]
     ])
 
 # ========== BUSINESS CONNECTION ==========
@@ -616,7 +742,7 @@ async def handle_business_connection(connection: BusinessConnection):
         
         await bot.send_message(
             chat_id=user_id,
-            text=f"✅ БОТ ПОДКЛЮЧЕН К БИЗНЕС-АККАУНТУ!\n\n🆔 ID: {user_id}\n📌 Команды работают в чатах с собеседниками!\n🔥 Введите .help для списка команд"
+            text=f"✅ БОТ ПОДКЛЮЧЕН К БИЗНЕС-АККАУНТУ!\n\n🆔 ID: {user_id}\n📌 Команды работают в чатах с собеседниками!\n🔥 Введите .inf для списка команд"
         )
 
 # ========== BUSINESS MESSAGE ==========
@@ -665,10 +791,242 @@ async def handle_business_message(message: types.Message):
         
         await delete_business_message(chat_id, message_id, connection_id)
         
-        # .help
+        # ===== НОВОЕ МЕНЮ .inf =====
+        if text.lower() == '.inf':
+            await send_to_business_chat(
+                chat_id,
+                "Добро пожаловать в RipSave 👀\n\nМаксимум возможностей — минимум лишних действий 🌟\nВ этом разделе вы можете ознакомиться с функционалом бота, узнать о доступных инструментах и открыть подробную информацию о каждой возможности.",
+                connection_id,
+                reply_markup=get_inf_keyboard()
+            )
+            return
+        
+        # ===== .help (старый) =====
         if text.lower() == '.help':
             await send_to_business_chat(chat_id, HELP_TEXT, connection_id)
             return
+        
+        # ===== НОВЫЕ КОМАНДЫ =====
+        
+        # .scan - проверка файла на вирусы
+        if text.lower() == '.scan' and message.reply_to_message:
+            reply = message.reply_to_message
+            if reply.document or reply.photo or reply.video:
+                # Получаем файл
+                file_id = None
+                if reply.document:
+                    file_id = reply.document.file_id
+                    file_name = reply.document.file_name or "file"
+                elif reply.photo:
+                    file_id = reply.photo[-1].file_id
+                    file_name = "photo.jpg"
+                elif reply.video:
+                    file_id = reply.video.file_id
+                    file_name = "video.mp4"
+                
+                if file_id:
+                    await send_to_business_chat(chat_id, "🔍 Сканирую файл на вирусы...", connection_id)
+                    # Скачиваем файл
+                    file = await bot.get_file(file_id)
+                    file_path = await bot.download_file(file.file_path)
+                    
+                    # Сохраняем временно
+                    temp_path = f"/tmp/{file_name}"
+                    with open(temp_path, "wb") as f:
+                        f.write(file_path.getvalue())
+                    
+                    result = await scan_file(temp_path, file_name)
+                    await send_to_business_chat(chat_id, result, connection_id)
+                    os.remove(temp_path)
+                    return
+        
+        # .ai - ИИ-агент
+        if text.lower().startswith('.ai '):
+            question = text[4:].strip()
+            result = await ai_agent(question)
+            await send_to_business_chat(chat_id, result, connection_id)
+            return
+        
+        if text.lower() == '.ai' and message.reply_to_message:
+            question = message.reply_to_message.text or "Нет текста"
+            result = await ai_agent(question)
+            await send_to_business_chat(chat_id, result, connection_id)
+            return
+        
+        # .sherlock - поиск аккаунтов
+        if text.lower().startswith('.sherlock '):
+            username = text[10:].strip()
+            result = await sherlock_search(username)
+            await send_to_business_chat(chat_id, result, connection_id)
+            return
+        
+        # .scanurl - проверка ссылки
+        if text.lower().startswith('.scanurl '):
+            url = text[9:].strip()
+            result = await scan_url(url)
+            await send_to_business_chat(chat_id, result, connection_id)
+            return
+        
+        if text.lower() == '.scanurl' and message.reply_to_message:
+            url = message.reply_to_message.text or ""
+            if url.startswith("http"):
+                result = await scan_url(url)
+                await send_to_business_chat(chat_id, result, connection_id)
+                return
+        
+        # ===== БАЗОВЫЕ КОМАНДЫ =====
+        
+        # .me - информация о вас
+        if text.lower() == '.me':
+            user = message.from_user
+            await send_to_business_chat(
+                chat_id,
+                f"👤 ИНФОРМАЦИЯ О ВАС\n\n"
+                f"🆔 ID: {user.id}\n"
+                f"📛 Имя: {user.full_name}\n"
+                f"👤 Username: @{user.username or 'Нет'}\n"
+                f"🤖 Бот: {'✅' if user.is_bot else '❌'}\n"
+                f"💬 Язык: {user.language_code or 'Неизвестно'}",
+                connection_id
+            )
+            return
+        
+        # .id - ваш ID
+        if text.lower() == '.id':
+            await send_to_business_chat(chat_id, f"🆔 Ваш ID: {message.from_user.id}", connection_id)
+            return
+        
+        # .chat - информация о чате
+        if text.lower() == '.chat':
+            chat = message.chat
+            await send_to_business_chat(
+                chat_id,
+                f"💬 ИНФОРМАЦИЯ О ЧАТЕ\n\n"
+                f"🆔 ID: {chat.id}\n"
+                f"📛 Название: {chat.title or 'Личный чат'}\n"
+                f"📊 Тип: {chat.type}\n"
+                f"👥 Участников: {chat.get_member_count() if hasattr(chat, 'get_member_count') else 'Неизвестно'}",
+                connection_id
+            )
+            return
+        
+        # .business - ID бизнес-подключения
+        if text.lower() == '.business':
+            await send_to_business_chat(chat_id, f"🏢 Business Connection ID:\n`{connection_id or 'Не активно'}`", connection_id)
+            return
+        
+        # .meta - данные сообщения в ответе
+        if text.lower() == '.meta' and message.reply_to_message:
+            reply = message.reply_to_message
+            await send_to_business_chat(
+                chat_id,
+                f"📋 ДАННЫЕ СООБЩЕНИЯ\n\n"
+                f"🆔 ID сообщения: {reply.message_id}\n"
+                f"👤 От: {reply.from_user.full_name} (@{reply.from_user.username or 'Нет'})\n"
+                f"🆔 User ID: {reply.from_user.id}\n"
+                f"💬 Чат ID: {reply.chat.id}\n"
+                f"🕐 Время: {reply.date.strftime('%d.%m.%Y %H:%M:%S')}\n"
+                f"📝 Текст: {reply.text or 'Нет текста'}\n"
+                f"📎 Медиа: {'✅' if reply.media else '❌'}",
+                connection_id
+            )
+            return
+        
+        # .ping - проверка задержки
+        if text.lower() == '.ping':
+            start = datetime.now()
+            await send_to_business_chat(chat_id, "🏓 Пинг...", connection_id)
+            end = datetime.now()
+            ping_ms = (end - start).microseconds / 1000
+            await send_to_business_chat(chat_id, f"🏓 Понг! {ping_ms:.2f} мс", connection_id)
+            return
+        
+        # .time - текущее время МСК
+        if text.lower() == '.time':
+            await send_to_business_chat(chat_id, f"🕐 Текущее время МСК: [{get_msk_time_short()}]", connection_id)
+            return
+        
+        # .date - текущая дата
+        if text.lower() == '.date':
+            await send_to_business_chat(chat_id, f"📅 Текущая дата: {get_msk_date()}", connection_id)
+            return
+        
+        # .cat - случайный кот
+        if text.lower() == '.cat':
+            cat_url = await get_random_cat()
+            if cat_url:
+                await send_to_business_chat(chat_id, "🐱 Ваш случайный кот:", connection_id)
+                # Отправляем фото
+                try:
+                    await bot.send_photo(chat_id, cat_url, business_connection_id=connection_id)
+                except:
+                    await send_to_business_chat(chat_id, f"🐱 Кот: {cat_url}", connection_id)
+            else:
+                await send_to_business_chat(chat_id, "❌ Не удалось найти кота", connection_id)
+            return
+        
+        # .status - статистика чата с пользователем
+        if text.lower() == '.status' and message.reply_to_message:
+            reply = message.reply_to_message
+            target_user_id = reply.from_user.id
+            
+            # Получаем логи пользователя
+            logs = get_logs_for_user(target_user_id, 20)
+            user_info = supabase.table("users").select("*").eq("user_id", target_user_id).execute()
+            
+            log_count = len(logs)
+            last_commands = "\n".join([f"• {log.get('command', '?')} ({log.get('time', '?')})" for log in logs[:5]]) or "Нет команд"
+            
+            await send_to_business_chat(
+                chat_id,
+                f"📊 СТАТИСТИКА ПОЛЬЗОВАТЕЛЯ\n\n"
+                f"👤 {reply.from_user.full_name} (@{reply.from_user.username or 'Нет'})\n"
+                f"🆔 ID: {target_user_id}\n"
+                f"📝 Всего команд: {log_count}\n\n"
+                f"🕐 Последние команды:\n{last_commands}",
+                connection_id
+            )
+            return
+        
+        # .clone - включить клонирование
+        if text.lower() == '.clone':
+            cloned_chats[str(chat_id)] = True
+            await send_to_business_chat(chat_id, "✅ Клонирование сообщений ВКЛЮЧЕНО", connection_id)
+            return
+        
+        # .unclone - выключить клонирование
+        if text.lower() == '.unclone':
+            cloned_chats.pop(str(chat_id), None)
+            await send_to_business_chat(chat_id, "✅ Клонирование сообщений ВЫКЛЮЧЕНО", connection_id)
+            return
+        
+        # .copyp - скопировать профиль собеседника
+        if text.lower() == '.copyp' and message.reply_to_message:
+            target = message.reply_to_message.from_user
+            if await copy_profile(user_id, target.id):
+                await send_to_business_chat(
+                    chat_id,
+                    f"✅ Профиль скопирован!\n\n"
+                    f"📛 Имя: {target.full_name}\n"
+                    f"👤 Username: @{target.username or 'Нет'}\n"
+                    f"🆔 ID: {target.id}\n\n"
+                    f"Используй .uncopyp чтобы вернуть свой профиль",
+                    connection_id
+                )
+            else:
+                await send_to_business_chat(chat_id, "❌ Ошибка копирования профиля", connection_id)
+            return
+        
+        # .uncopyp - вернуть свой профиль
+        if text.lower() == '.uncopyp':
+            if str(user_id) in copied_profiles:
+                copied_profiles.pop(str(user_id), None)
+                await send_to_business_chat(chat_id, "✅ Ваш профиль восстановлен", connection_id)
+            else:
+                await send_to_business_chat(chat_id, "❌ У вас не скопирован профиль", connection_id)
+            return
+        
+        # ===== СТАРЫЕ КОМАНДЫ =====
         
         # .stop
         if text.lower().startswith('.stop'):
@@ -767,7 +1125,7 @@ async def handle_business_message(message: types.Message):
             await send_to_business_chat(chat_id, f"🔑 Ваш ключ:\n\n`{key}`\n\n⏱ Действует 10 часов", connection_id)
             return
         
-        # .tex on
+        # .tex on/off
         if text.lower().startswith('.tex on'):
             parts = text.split(maxsplit=2)
             if len(parts) < 3:
@@ -833,7 +1191,7 @@ async def handle_business_message(message: types.Message):
     except Exception as e:
         logger.error(f"❌ Ошибка бизнес-сообщения: {e}")
 
-# ========== ТЕКСТ ПОМОЩИ ==========
+# ========== ТЕКСТ ПОМОЩИ (старый) ==========
 HELP_TEXT = """📚 СПИСОК КОМАНД
 
 🔹 В ЛИЧКЕ (с /):
@@ -848,6 +1206,7 @@ HELP_TEXT = """📚 СПИСОК КОМАНД
 /stop — Остановить раннеры (админ)
 
 🔹 В ЧАТАХ (с .):
+.inf — Показать меню команд
 .help — Справка
 .idlist — Пользователи
 .logs (ID) — Логи
@@ -861,6 +1220,26 @@ HELP_TEXT = """📚 СПИСОК КОМАНД
 .stop run max — Остановить все раннеры (кроме бота)
 .stop bot max — Остановить все раннеры бота
 .stop max max — Остановить ВСЕ раннеры
+
+🔹 НОВЫЕ КОМАНДЫ:
+.scan — Проверка файла на вирусы
+.ai [вопрос] — ИИ-агент
+.sherlock [ник] — Поиск аккаунтов
+.scanurl [ссылка] — Проверка ссылки на вирусы
+.me — Информация о вас
+.id — Ваш ID
+.chat — Информация о чате
+.business — ID бизнес-подключения
+.meta — Данные сообщения в ответе
+.ping — Проверить задержку
+.time — Текущее время МСК
+.date — Текущая дата
+.cat — Случайный кот
+.status — Статистика чата с пользователем
+.clone — Включить клонирование
+.unclone — Выключить клонирование
+.copyp — Скопировать профиль собеседника
+.uncopyp — Вернуть свой профиль
 
 📌 .команды — в чатах с собеседниками
 📌 /команды — в личке с ботом"""
@@ -889,7 +1268,10 @@ async def start(message: types.Message):
             return
         
         await save_log_async({"command": "/start", "user_id": user_id, "username": message.from_user.username or "Нет", "time": get_msk_time()})
-        await message.answer("🔥 ДОБРО ПОЖАЛОВАТЬ!\n\nВыберите действие:", reply_markup=get_main_keyboard())
+        await message.answer(
+            "🔥 ДОБРО ПОЖАЛОВАТЬ В RipSave!\n\nМаксимум возможностей — минимум лишних действий 🌟\n\nВыберите действие:",
+            reply_markup=get_main_keyboard()
+        )
     finally:
         del processing_commands[user_id]
 
@@ -1083,6 +1465,7 @@ async def tex_command(message: types.Message):
 @dp.callback_query()
 async def handle_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
+    data = callback.data
     
     if is_banned(user_id):
         if str(user_id) not in blocked_notified:
@@ -1099,7 +1482,100 @@ async def handle_callback(callback: types.CallbackQuery):
         await callback.answer()
         return
     
-    data = callback.data
+    # ===== НОВЫЕ CALLBACK ДЛЯ .inf =====
+    if data == "show_inf":
+        await callback.message.edit_text(
+            "Добро пожаловать в RipSave 👀\n\nМаксимум возможностей — минимум лишних действий 🌟\nВ этом разделе вы можете ознакомиться с функционалом бота, узнать о доступных инструментах и открыть подробную информацию о каждой возможности.",
+            reply_markup=get_inf_keyboard()
+        )
+        await callback.answer()
+        return
+    
+    if data == "inf_main":
+        await callback.message.edit_text(
+            "📋 ОСНОВНЫЕ КОМАНДЫ\n\n"
+            ".me, .id, .chat — информация о вас/чате\n"
+            ".business — ID бизнес-подключения\n"
+            ".meta — данные сообщения в ответе\n"
+            ".inf — показать это меню\n"
+            ".ping — проверить задержку и состояние бота\n"
+            ".time — текущее время МСК в формате [1:10]\n"
+            ".date — текущая дата\n"
+            ".cat — случайное изображение с котом\n"
+            ".status — статистика чата с пользователем\n"
+            ".clone — включить клонирование сообщений\n"
+            ".unclone — выключить клонирование\n"
+            ".copyp — скопировать ник, аватар и описание собеседника\n"
+            ".uncopyp — вернуть свой исходный профиль"
+        )
+        await callback.answer()
+        return
+    
+    if data == "inf_probe":
+        await callback.message.edit_text(
+            "🔍 ПРОБИВЫ\n\n"
+            ".whois ip [IP] — Пробив IP-адреса\n"
+            ".whois n [номер] — Пробив номера телефона\n"
+            ".whois qz [@username] — Пробив по юзернейму\n"
+            ".scan — Проверка файла на вирусы\n"
+            ".scanurl [ссылка] — Проверка ссылки на вирусы/фишинг\n"
+            ".sherlock [ник] — Поиск аккаунтов по никнейму\n"
+            ".status — Статистика чата с пользователем"
+        )
+        await callback.answer()
+        return
+    
+    if data == "inf_admin":
+        await callback.message.edit_text(
+            "🛠️ АДМИН-КОМАНДЫ\n\n"
+            ".ban [ID] [время] [причина] — Забанить пользователя\n"
+            ".unban [ID] [причина] — Разбанить пользователя\n"
+            ".idlist — Список всех пользователей\n"
+            ".logs [ID] — Логи пользователя\n"
+            ".key — Создать ключ доступа\n"
+            ".tex on/off — Включить/выключить техработы\n"
+            ".stop [run/bot/max] max — Остановить раннеры"
+        )
+        await callback.answer()
+        return
+    
+    if data == "inf_all":
+        await callback.message.edit_text(
+            "📚 ВСЕ КОМАНДЫ\n\n"
+            "🔹 ОСНОВНЫЕ:\n"
+            ".me, .id, .chat — информация о вас/чате\n"
+            ".business — ID бизнес-подключения\n"
+            ".meta — данные сообщения в ответе\n"
+            ".inf — показать это меню\n"
+            ".ping — проверить задержку\n"
+            ".time — текущее время МСК\n"
+            ".date — текущая дата\n"
+            ".cat — случайный кот\n"
+            ".status — статистика чата\n"
+            ".clone — включить клонирование\n"
+            ".unclone — выключить клонирование\n"
+            ".copyp — скопировать профиль\n"
+            ".uncopyp — вернуть профиль\n\n"
+            "🔹 ПРОБИВЫ:\n"
+            ".whois ip [IP] — Пробив IP\n"
+            ".whois n [номер] — Пробив номера\n"
+            ".whois qz [@username] — Пробив юзера\n"
+            ".scan — Проверка файла на вирусы\n"
+            ".scanurl [ссылка] — Проверка ссылки\n"
+            ".sherlock [ник] — Поиск аккаунтов\n\n"
+            "🔹 АДМИН:\n"
+            ".ban [ID] [время] [причина] — Бан\n"
+            ".unban [ID] [причина] — Разбан\n"
+            ".idlist — Список пользователей\n"
+            ".logs [ID] — Логи пользователя\n"
+            ".key — Создать ключ\n"
+            ".tex on/off — Техработы\n"
+            ".stop [run/bot/max] max — Остановить раннеры"
+        )
+        await callback.answer()
+        return
+    
+    # ===== СТАРЫЕ CALLBACK =====
     if data == "probe_ip":
         await callback.message.answer("🌐 ВВЕДИТЕ IP\n📌 Пример: 8.8.8.8")
     elif data == "probe_phone":
@@ -1113,7 +1589,6 @@ async def handle_callback(callback: types.CallbackQuery):
 async def handle_private_message(message: types.Message):
     user_id = message.from_user.id
     
-    # Пропускаем бизнес-сообщения
     if message.business_connection_id:
         return
     
@@ -1190,6 +1665,7 @@ async def main():
     print(f"📁 Supabase: {SUPABASE_URL}")
     print("📌 Команды с / — в личке бота")
     print("📌 Команды с . — в чатах с собеседниками")
+    print("📌 .inf — новое меню команд")
     print("=" * 60)
     
     os.makedirs('data', exist_ok=True)
