@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RipSave — Консоль</title>
+    <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+    <div class="container">
+        <div class="console-header">
+            <div class="logo-small">🛡️ RipSave Console</div>
+            <div class="status-badge" id="connectionStatus">✅ Online</div>
+            <button id="logoutBtn" class="logout-btn">Выйти</button>
+        </div>
+        
+        <div class="console-body">
+            <div class="log-container" id="logContainer">
+                <div class="log-entry system">━━━ RIPSAVE CONSOLE ━━━</div>
+                <div class="log-entry system">📡 Ожидание команд...</div>
+            </div>
+        </div>
+        
+        <div class="console-footer">
+            <div class="quick-commands" id="quickCommands">
+                <button class="quick-btn" data-cmd=".help">.help</button>
+                <button class="quick-btn" data-cmd=".idlist">.idlist</button>
+                <button class="quick-btn" data-cmd=".key">.key</button>
+                <button class="quick-btn" data-cmd=".tex on">.tex on</button>
+                <button class="quick-btn" data-cmd=".tex off">.tex off</button>
+                <button class="quick-btn" data-cmd=".stop bot max">.stop bot max</button>
+            </div>
+            <div class="command-line">
+                <input type="text" id="commandInput" placeholder="Введите команду..." />
+                <button id="sendBtn">▶</button>
+                <button id="clearBtn">✕</button>
+            </div>
+        </div>
+    </div>
+    
+    <script src="script.js"></script>
+</body>
+</html>
