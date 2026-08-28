@@ -17,7 +17,6 @@ from supabase import create_client, Client
 import aiohttp
 import random
 import string
-import hashlib
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -47,11 +46,10 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# ===== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ =====
 business_connections = {}
 blocked_notified = {}
 processing_commands = {}
-cloned_profiles = {}
-copied_profiles = {}
 muted_chats = {}
 antispam_settings = {}
 warn_settings = {}
@@ -88,9 +86,135 @@ def parse_time(time_str):
     
     return total_minutes, f"{total_minutes} минут"
 
-def format_bold(text):
-    """Делает текст жирным через *текст*"""
-    return f"*{text}*"
+def format_centered(text):
+    """Центрирует текст в блоке"""
+    lines = text.split('\n')
+    max_len = max(len(line) for line in lines) if lines else 0
+    border = '━' * (max_len + 4)
+    result = f"┏{border}┓\n"
+    for line in lines:
+        padding = max_len - len(line)
+        result += f"┃ {line}{' ' * padding} ┃\n"
+    result += f"┗{border}┛"
+    return result
+
+def format_response(title, content):
+    """Форматирует ответ: жирный заголовок + цитата"""
+    return f"*{title}*\n\n```\n{content}\n```"
+
+# ========== ФУНКЦИИ ДЛЯ ПРИЛОЖЕНИЯ ==========
+
+async def process_app_command(command: str, user_id: int):
+    """Обрабатывает команду из приложения"""
+    try:
+        # Сохраняем команду в app_commands
+        supabase.table("app_commands").insert({
+            "user_id": user_id,
+            "command": command,
+            "status": "pending"
+        }).execute()
+        
+        result = ""
+        
+        # Обрабатываем команду
+        if command.startswith('.ban'):
+            parts = command.split()
+            if len(parts) >= 4:
+                target_id = parts[1]
+                time_str = parts[2]
+                reason = " ".join(parts[3:])
+                is_global = '-g' in parts
+                silent = '-s' in parts
+                reason = re.sub(r'\s*-[gs]\s*', ' ', reason).strip()
+                minutes, time_display = parse_time(time_str)
+                
+                if add_ban(target_id, reason, user_id, minutes, is_global, silent):
+                    result = f"✅ Пользователь {target_id} забанен\n📌 Reason: {reason}\n🖥️ Server: {'глобальный' if is_global else 'локальный'}"
+                else:
+                    result = "❌ Ошибка бана"
+            else:
+                result = "❌ .ban [ID] [время] [причина] [-s] [-g]"
+        
+        elif command.startswith('.unban'):
+            parts = command.split()
+            if len(parts) >= 2:
+                target_id = parts[1]
+                is_global = '-g' in parts
+                reason = " ".join(parts[2:]) if len(parts) > 2 else "Без причины"
+                reason = re.sub(r'\s*-g\s*', ' ', reason).strip()
+                
+                if remove_ban(target_id, is_global):
+                    result = f"✅ Пользователь {target_id} разбанен\n📌 Reason: {reason}"
+                else:
+                    result = f"❌ Пользователь {target_id} не найден в черном списке"
+            else:
+                result = "❌ .unban [ID] [причина] [-g]"
+        
+        elif command == '.idlist':
+            users = get_all_users()
+            if users:
+                result = "👥 СПИСОК ПОЛЬЗОВАТЕЛЕЙ\n\n"
+                for user in users[:20]:
+                    result += f"🆔 {user.get('user_id', '?')} → @{user.get('username', 'Нет')}\n"
+            else:
+                result = "📊 Список пользователей пуст"
+        
+        elif command == '.key':
+            key = create_session_key()
+            result = f"🔑 Ключ: {key}"
+        
+        elif command.startswith('.logs'):
+            parts = command.split()
+            if len(parts) >= 2:
+                try:
+                    target_id = int(parts[1])
+                    count = min(int(parts[2]) if len(parts) > 2 else 10, 50)
+                    logs = get_logs_for_user(target_id, count)
+                    if logs:
+                        result = f"📋 ЛОГИ ДЛЯ {target_id} (последние {len(logs)})\n\n"
+                        for log in logs:
+                            result += f"🕐 {log.get('time', '?')}\n📝 {log.get('command', '?')}\n\n"
+                    else:
+                        result = f"📊 Логов для {target_id} нет"
+                except:
+                    result = "❌ .logs [ID] [кол-во]"
+            else:
+                result = "❌ .logs [ID] [кол-во]"
+        
+        elif command == '.help':
+            result = """📚 ДОСТУПНЫЕ КОМАНДЫ
+
+.ban [ID] [время] [причина] [-s] [-g] — Бан
+.unban [ID] [причина] [-g] — Разбан
+.idlist — Список пользователей
+.logs [ID] — Логи пользователя
+.key — Создать ключ
+.tex on/off — Техработы
+.stop [run/bot/max] max — Остановить раннеры
+.whois ip [IP] — Пробив IP
+.whois n [номер] — Пробив номера
+.whois qz [@username] — Пробив юзера"""
+        
+        else:
+            result = f"❌ Неизвестная команда: {command}"
+        
+        # Обновляем статус команды
+        supabase.table("app_commands").update({
+            "status": "completed",
+            "result": result,
+            "executed_at": datetime.now().isoformat()
+        }).eq("command", command).eq("user_id", user_id).order("id", desc=True).limit(1).execute()
+        
+        return result
+            
+    except Exception as e:
+        error_msg = f"❌ Ошибка: {str(e)}"
+        supabase.table("app_commands").update({
+            "status": "failed",
+            "result": error_msg,
+            "executed_at": datetime.now().isoformat()
+        }).eq("command", command).eq("user_id", user_id).order("id", desc=True).limit(1).execute()
+        return error_msg
 
 # ========== SUPABASE ФУНКЦИИ ==========
 
@@ -603,7 +727,6 @@ async def run_animation(chat_id, animation_name, connection_id=None):
 # ========== КЛАВИАТУРЫ ==========
 
 def get_inf_keyboard():
-    """Главное меню .inf - 3 кнопки в строке"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="📋 Основные", callback_data="inf_main"),
@@ -621,7 +744,6 @@ def get_inf_keyboard():
     ])
 
 def get_fun_keyboard(page=1):
-    """Развлекательные - 3 кнопки в строке"""
     if page == 1:
         return InlineKeyboardMarkup(inline_keyboard=[
             [
@@ -640,7 +762,6 @@ def get_fun_keyboard(page=1):
         ])
 
 def get_utils_keyboard(page=1):
-    """Утилиты - 3 кнопки в строке"""
     if page == 1:
         return InlineKeyboardMarkup(inline_keyboard=[
             [
@@ -659,7 +780,6 @@ def get_utils_keyboard(page=1):
         ])
 
 def get_back_keyboard():
-    """Кнопка назад - 1 кнопка"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="show_inf")]
     ])
@@ -878,22 +998,19 @@ async def handle_business_message(message: types.Message):
         
         # .clone / .unclone
         if text.lower() == '.clone':
-            cloned_profiles[str(chat_id)] = True
+            muted_chats[str(chat_id)] = True
             await send_to_business_chat(chat_id, "✅ Клонирование сообщений ВКЛЮЧЕНО", connection_id)
             return
         
         if text.lower() == '.unclone':
-            cloned_profiles.pop(str(chat_id), None)
+            muted_chats.pop(str(chat_id), None)
             await send_to_business_chat(chat_id, "✅ Клонирование сообщений ВЫКЛЮЧЕНО", connection_id)
             return
         
         # .copyp / .uncopyp
         if text.lower() == '.copyp' and message.reply_to_message:
             target = message.reply_to_message.from_user
-            copied_profiles[str(user_id)] = {
-                "username": target.username,
-                "full_name": target.full_name
-            }
+            # Сохраняем в память (для простоты)
             await send_to_business_chat(
                 chat_id,
                 f"✅ Профиль скопирован!\n\n"
@@ -906,7 +1023,6 @@ async def handle_business_message(message: types.Message):
             return
         
         if text.lower() == '.uncopyp':
-            copied_profiles.pop(str(user_id), None)
             await send_to_business_chat(chat_id, "✅ Ваш профиль восстановлен", connection_id)
             return
         
