@@ -52,7 +52,6 @@ blocked_notified = {}
 processing_commands = {}
 muted_chats = {}
 antispam_settings = {}
-warn_settings = {}
 
 # ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
 
@@ -87,156 +86,18 @@ def parse_time(time_str):
     return total_minutes, f"{total_minutes} минут"
 
 def format_response(title, content):
-    """Форматирует ответ: жирный заголовок + цитата"""
-    return f"*{title}*\n\n```\n{content}\n```"
-
-# =====================================================
-# ФУНКЦИИ ДЛЯ ОБЩЕНИЯ С САЙТОМ
-# =====================================================
-
-async def process_web_commands():
-    """Фоновая задача — обработка команд с сайта"""
-    while True:
-        try:
-            # Ищем необработанные команды
-            result = supabase.table("web_commands").select("*").eq("status", "pending").order("id", desc=True).limit(10).execute()
-            
-            for cmd in result.data:
-                user_id = cmd.get("user_id")
-                command = cmd.get("command")
-                cmd_id = cmd.get("id")
-                
-                # Обрабатываем команду
-                response = await execute_web_command(command, user_id)
-                
-                # Обновляем статус
-                supabase.table("web_commands").update({
-                    "status": "completed",
-                    "result": response,
-                    "executed_at": datetime.now().isoformat()
-                }).eq("id", cmd_id).execute()
-                
-                # Сохраняем в чат
-                supabase.table("web_chat").insert({
-                    "user_id": user_id,
-                    "message": f"> {command}",
-                    "from_bot": False
-                }).execute()
-                
-                supabase.table("web_chat").insert({
-                    "user_id": user_id,
-                    "message": response,
-                    "from_bot": True
-                }).execute()
-                
-        except Exception as e:
-            logger.error(f"❌ Ошибка обработки веб-команд: {e}")
-        
-        await asyncio.sleep(2)  # Проверка каждые 2 секунды
-
-async def execute_web_command(command: str, user_id: int) -> str:
-    """Выполняет команду с сайта и возвращает результат"""
+    """Форматирует ответ: жирный заголовок + центрированное содержимое в рамке"""
+    # Центрируем содержимое
+    lines = content.split('\n')
+    max_len = max(len(line) for line in lines) if lines else 0
+    border = '━' * (max_len + 4)
+    centered = f"┏{border}┓\n"
+    for line in lines:
+        padding = max_len - len(line)
+        centered += f"┃ {line}{' ' * padding} ┃\n"
+    centered += f"┗{border}┛"
     
-    # .help
-    if command == '.help':
-        return """📚 ДОСТУПНЫЕ КОМАНДЫ
-
-.ban [ID] [время] [причина] — Бан
-.unban [ID] — Разбан
-.idlist — Список пользователей
-.logs [ID] — Логи пользователя
-.key — Создать ключ
-.tex on/off — Техработы
-.stop [run/bot/max] max — Остановить раннеры"""
-
-    # .ban
-    if command.startswith('.ban '):
-        parts = command.split()
-        if len(parts) >= 4:
-            target_id = parts[1]
-            time_str = parts[2]
-            reason = " ".join(parts[3:])
-            is_global = '-g' in parts
-            silent = '-s' in parts
-            reason = re.sub(r'\s*-[gs]\s*', ' ', reason).strip()
-            minutes, time_display = parse_time(time_str)
-            
-            if add_ban(target_id, reason, user_id, minutes, is_global, silent):
-                return f"✅ Пользователь {target_id} забанен\n📌 Reason: {reason}\n🖥️ Server: {'глобальный' if is_global else 'локальный'}"
-            else:
-                return "❌ Ошибка бана"
-        return "❌ .ban [ID] [время] [причина]"
-
-    # .unban
-    if command.startswith('.unban '):
-        parts = command.split()
-        if len(parts) >= 2:
-            target_id = parts[1]
-            is_global = '-g' in parts
-            reason = " ".join(parts[2:]) if len(parts) > 2 else "Без причины"
-            reason = re.sub(r'\s*-g\s*', ' ', reason).strip()
-            
-            if remove_ban(target_id, is_global):
-                return f"✅ Пользователь {target_id} разбанен\n📌 Reason: {reason}"
-            else:
-                return f"❌ Пользователь {target_id} не найден в черном списке"
-        return "❌ .unban [ID] [причина]"
-
-    # .idlist
-    if command == '.idlist':
-        users = get_all_users()
-        if users:
-            result = "👥 СПИСОК ПОЛЬЗОВАТЕЛЕЙ\n\n"
-            for user in users[:20]:
-                result += f"🆔 {user.get('user_id', '?')} → @{user.get('username', 'Нет')}\n"
-            return result
-        return "📊 Список пользователей пуст"
-
-    # .key
-    if command == '.key':
-        key = create_session_key()
-        return f"🔑 Ключ: {key}"
-
-    # .logs
-    if command.startswith('.logs '):
-        parts = command.split()
-        if len(parts) >= 2:
-            try:
-                target_id = int(parts[1])
-                count = min(int(parts[2]) if len(parts) > 2 else 10, 50)
-                logs = get_logs_for_user(target_id, count)
-                if logs:
-                    result = f"📋 ЛОГИ ДЛЯ {target_id} (последние {len(logs)})\n\n"
-                    for log in logs:
-                        result += f"🕐 {log.get('time', '?')}\n📝 {log.get('command', '?')}\n\n"
-                    return result
-                return f"📊 Логов для {target_id} нет"
-            except:
-                return "❌ .logs [ID] [кол-во]"
-        return "❌ .logs [ID] [кол-во]"
-
-    # .tex on
-    if command == '.tex on':
-        minutes = 60
-        expires_at = (datetime.now() + timedelta(minutes=minutes)).isoformat()
-        set_tech_mode(True, expires_at)
-        return f"✅ ТЕХ-РАБОТЫ ВКЛЮЧЕНЫ\n🕐 Окончание: {(datetime.now() + timedelta(minutes=minutes)).strftime('%d.%m.%Y %H:%M')}"
-
-    if command == '.tex off':
-        set_tech_mode(False, None)
-        return "✅ ТЕХ-РАБОТЫ ВЫКЛЮЧЕНЫ"
-
-    # .stop
-    if command.startswith('.stop '):
-        parts = command.split()
-        if len(parts) >= 3:
-            target = parts[1].lower()
-            action = parts[2].lower()
-            if target in ['run', 'bot', 'max'] and action == 'max':
-                return await stop_runners(target, user_id, "web_console")
-        return "❌ .stop [run/bot/max] max"
-
-    return f"❌ Неизвестная команда: {command}"
+    return f"*{title}*\n\n```\n{centered}\n```"
 
 # ========== SUPABASE ФУНКЦИИ ==========
 
@@ -360,51 +221,6 @@ def get_ban_info(user_id):
         return data
     except:
         return None
-
-def load_keys():
-    try:
-        result = supabase.table("keys").select("*").execute()
-        keys = {}
-        for item in result.data:
-            keys[item["key"]] = {
-                "user_id": item["user_id"],
-                "created_at": item["created_at"],
-                "expires_at": item["expires_at"]
-            }
-        return keys
-    except:
-        return {}
-
-def save_keys(keys):
-    try:
-        supabase.table("keys").delete().neq("id", 0).execute()
-        for key, data in keys.items():
-            supabase.table("keys").insert({
-                "key": key,
-                "user_id": data["user_id"],
-                "created_at": data["created_at"],
-                "expires_at": data["expires_at"]
-            }).execute()
-        return True
-    except:
-        return False
-
-def generate_key():
-    import string, secrets
-    chars = string.ascii_uppercase + string.digits
-    random_part = ''.join(secrets.choice(chars) for _ in range(5))
-    return f"ADMIN_{random_part}"
-
-def create_session_key():
-    keys = load_keys()
-    key = generate_key()
-    keys[key] = {
-        "user_id": ADMIN_ID,
-        "created_at": get_msk_time(),
-        "expires_at": (datetime.now() + timedelta(hours=10)).isoformat()
-    }
-    save_keys(keys)
-    return key
 
 def load_tech():
     try:
@@ -905,10 +721,12 @@ async def handle_business_message(message: types.Message):
             user = message.from_user
             await send_to_business_chat(
                 chat_id,
-                f"*👤 Ваш профиль*\n\n"
-                f"🆔 ID: {user.id}\n"
-                f"👤 Ник: @{user.username or 'Нет'}\n"
-                f"📛 Роль: {'admin' if is_admin(user.id) else 'user'}",
+                format_response(
+                    "👤 Ваш профиль",
+                    f"🆔 ID: {user.id}\n"
+                    f"👤 Ник: @{user.username or 'Нет'}\n"
+                    f"📛 Роль: {'admin' if is_admin(user.id) else 'user'}"
+                ),
                 connection_id
             )
             return
@@ -917,9 +735,11 @@ async def handle_business_message(message: types.Message):
         if text.lower() == '.id':
             await send_to_business_chat(
                 chat_id,
-                f"*🆔 Идентификаторы*\n\n"
-                f"Ваш Telegram ID: {message.from_user.id}\n"
-                f"ID чата: {chat_id}",
+                format_response(
+                    "🆔 Идентификаторы",
+                    f"Ваш Telegram ID: {message.from_user.id}\n"
+                    f"ID чата: {chat_id}"
+                ),
                 connection_id
             )
             return
@@ -929,9 +749,11 @@ async def handle_business_message(message: types.Message):
             chat = message.chat
             await send_to_business_chat(
                 chat_id,
-                f"*💬 Информация о чате*\n\n"
-                f"🆔 ID: {chat.id}\n"
-                f"📛 Название: {chat.title or 'личный чат'}",
+                format_response(
+                    "💬 Информация о чате",
+                    f"🆔 ID: {chat.id}\n"
+                    f"📛 Название: {chat.title or 'личный чат'}"
+                ),
                 connection_id
             )
             return
@@ -940,8 +762,10 @@ async def handle_business_message(message: types.Message):
         if text.lower() == '.business':
             await send_to_business_chat(
                 chat_id,
-                f"*🔗 Business connection*\n\n"
-                f"{connection_id or 'Не активно'}",
+                format_response(
+                    "🔗 Business connection",
+                    f"{connection_id or 'Не активно'}"
+                ),
                 connection_id
             )
             return
@@ -950,8 +774,10 @@ async def handle_business_message(message: types.Message):
         if text.lower() == '.time':
             await send_to_business_chat(
                 chat_id,
-                f"*🕒 Текущее время (МСК)*\n\n"
-                f"[{get_msk_time_short()}]",
+                format_response(
+                    "🕒 Текущее время (МСК)",
+                    f"[{get_msk_time_short()}]"
+                ),
                 connection_id
             )
             return
@@ -960,9 +786,11 @@ async def handle_business_message(message: types.Message):
         if text.lower() == '.date':
             await send_to_business_chat(
                 chat_id,
-                f"*📅 Текущая дата*\n\n"
-                f"{get_msk_date_full()}\n"
-                f"TZ: Europe/Moscow",
+                format_response(
+                    "📅 Текущая дата",
+                    f"{get_msk_date_full()}\n"
+                    f"TZ: Europe/Moscow"
+                ),
                 connection_id
             )
             return
@@ -975,11 +803,13 @@ async def handle_business_message(message: types.Message):
             ping_ms = (end - start).microseconds / 1000
             await send_to_business_chat(
                 chat_id,
-                f"*🏓 Pong*\n\n"
-                f"API: {ping_ms:.0f} ms\n"
-                f"TCP: {ping_ms * 0.5:.0f} ms\n"
-                f"Bot: @{bot.username}\n"
-                f"Status: ✅ online",
+                format_response(
+                    "🏓 Pong",
+                    f"API: {ping_ms:.0f} ms\n"
+                    f"TCP: {ping_ms * 0.5:.0f} ms\n"
+                    f"Bot: @{bot.username}\n"
+                    f"Status: ✅ online"
+                ),
                 connection_id
             )
             return
@@ -1009,11 +839,13 @@ async def handle_business_message(message: types.Message):
             
             await send_to_business_chat(
                 chat_id,
-                f"*📊 Статистика пользователя*\n\n"
-                f"👤 {reply.from_user.full_name} (@{reply.from_user.username or 'Нет'})\n"
-                f"🆔 ID: {target_user_id}\n"
-                f"📝 Всего команд: {log_count}\n\n"
-                f"🕐 Последние команды:\n{last_commands}",
+                format_response(
+                    "📊 Статистика пользователя",
+                    f"👤 {reply.from_user.full_name} (@{reply.from_user.username or 'Нет'})\n"
+                    f"🆔 ID: {target_user_id}\n"
+                    f"📝 Всего команд: {log_count}\n\n"
+                    f"🕐 Последние команды:\n{last_commands}"
+                ),
                 connection_id
             )
             return
@@ -1406,27 +1238,33 @@ async def handle_business_message(message: types.Message):
                     await delete_business_message(chat_id, message_id, connection_id)
                     await bot.send_message(
                         user_id,
-                        f"*✅ Пользователь успешно заблокирован!*\n\n"
-                        f"🆔 ID: {target_id}\n"
-                        f"📌 Reason: {reason}\n"
-                        f"🖥️ Server: {'глобальный' if is_global else 'локальный'}",
+                        format_response(
+                            "✅ Пользователь успешно заблокирован!",
+                            f"🆔 ID: {target_id}\n"
+                            f"📌 Reason: {reason}\n"
+                            f"🖥️ Server: {'глобальный' if is_global else 'локальный'}"
+                        ),
                         parse_mode="Markdown"
                     )
                 else:
                     await send_to_business_chat(
                         chat_id,
-                        f"*✅ Пользователь успешно заблокирован!*\n\n"
-                        f"🆔 ID: {target_id}\n"
-                        f"📌 Reason: {reason}\n"
-                        f"🖥️ Server: {'глобальный' if is_global else 'локальный'}",
+                        format_response(
+                            "✅ Пользователь успешно заблокирован!",
+                            f"🆔 ID: {target_id}\n"
+                            f"📌 Reason: {reason}\n"
+                            f"🖥️ Server: {'глобальный' if is_global else 'локальный'}"
+                        ),
                         connection_id
                     )
                 
                 try:
-                    ban_msg = f"*Вас заблокировали в боте!*\n\n"
-                    ban_msg += f"📌 Reason: {reason}\n"
-                    ban_msg += f"⏱ Time: {time_display}\n"
-                    ban_msg += f"🖥️ Server: {'глобальный' if is_global else 'локальный'}"
+                    ban_msg = format_response(
+                        "⛔ Вас заблокировали в боте!",
+                        f"📌 Reason: {reason}\n"
+                        f"⏱ Time: {time_display}\n"
+                        f"🖥️ Server: {'глобальный' if is_global else 'локальный'}"
+                    )
                     if not minutes:
                         ban_msg += "\n\n⚠️ Блокировка выдана навсегда"
                     await bot.send_message(chat_id=int(target_id), text=ban_msg, parse_mode="Markdown")
@@ -1458,17 +1296,22 @@ async def handle_business_message(message: types.Message):
             if remove_ban(target_id, is_global):
                 await send_to_business_chat(
                     chat_id,
-                    f"*✅ Пользователь разбанен!*\n\n"
-                    f"🆔 ID: {target_id}\n"
-                    f"📌 Reason: {reason}\n"
-                    f"🖥️ Server: {'глобальный' if is_global else 'локальный'}",
+                    format_response(
+                        "✅ Пользователь разбанен!",
+                        f"🆔 ID: {target_id}\n"
+                        f"📌 Reason: {reason}\n"
+                        f"🖥️ Server: {'глобальный' if is_global else 'локальный'}"
+                    ),
                     connection_id
                 )
                 
                 try:
                     await bot.send_message(
                         chat_id=int(target_id),
-                        text=f"*Вас разблокировали!*\n\n📌 Reason: {reason}",
+                        text=format_response(
+                            "✅ Вас разблокировали!",
+                            f"📌 Reason: {reason}"
+                        ),
                         parse_mode="Markdown"
                     )
                 except:
@@ -1526,12 +1369,6 @@ async def handle_business_message(message: types.Message):
                 await send_to_business_chat(chat_id, result[:4000], connection_id)
             except:
                 await send_to_business_chat(chat_id, "❌ Неверный формат", connection_id)
-            return
-        
-        # .key
-        if text.lower() == '.key':
-            key = create_session_key()
-            await send_to_business_chat(chat_id, f"*🔑 Ваш ключ:*\n\n`{key}`\n\n⏱ Действует 10 часов", connection_id)
             return
         
         # .tex on/off
@@ -1612,406 +1449,248 @@ async def handle_callback(callback: types.CallbackQuery):
         return
     
     try:
-        # ===== МЕНЮ .inf =====
+        # ===== .inf - при нажатии удаляем старое и присылаем новое =====
         if data == "show_inf":
             try:
-                await callback.message.edit_text(
-                    "*Добро пожаловать в RipSave 👀*\n\n"
-                    "Максимум возможностей — минимум лишних действий 🌟\n"
-                    "В этом разделе вы можете ознакомиться с функционалом бота, узнать о доступных инструментах и открыть подробную информацию о каждой возможности.",
-                    reply_markup=get_inf_keyboard(),
-                    parse_mode="Markdown"
-                )
+                await callback.message.delete()
             except:
-                await callback.message.answer(
-                    "*Добро пожаловать в RipSave 👀*\n\n"
-                    "Максимум возможностей — минимум лишних действий 🌟\n"
-                    "В этом разделе вы можете ознакомиться с функционалом бота, узнать о доступных инструментах и открыть подробную информацию о каждой возможности.",
-                    reply_markup=get_inf_keyboard(),
-                    parse_mode="Markdown"
-                )
+                pass
+            await callback.message.answer(
+                "*Добро пожаловать в RipSave 👀*\n\n"
+                "Максимум возможностей — минимум лишних действий 🌟\n"
+                "В этом разделе вы можете ознакомиться с функционалом бота, узнать о доступных инструментах и открыть подробную информацию о каждой возможности.",
+                reply_markup=get_inf_keyboard(),
+                parse_mode="Markdown"
+            )
             await callback.answer()
             return
         
         if data == "inf_main":
             try:
-                await callback.message.edit_text(
-                    "*📋 ОСНОВНЫЕ КОМАНДЫ*\n\n"
-                    ".me, .id, .chat — информация о вас/чате\n"
-                    ".business — ID бизнес-подключения\n"
-                    ".meta — данные сообщения в ответе\n"
-                    ".inf — показать это меню\n"
-                    ".ping — проверить задержку и состояние бота\n"
-                    ".time — текущее время МСК в формате [1:10]\n"
-                    ".date — текущая дата\n"
-                    ".cat — случайное изображение с котом\n"
-                    ".status — статистика чата с пользователем\n"
-                    ".clone — включить клонирование сообщений\n"
-                    ".unclone — выключить клонирование\n"
-                    ".copyp — скопировать ник, аватар и описание собеседника\n"
-                    ".uncopyp — вернуть свой исходный профиль",
-                    reply_markup=get_back_keyboard(),
-                    parse_mode="Markdown"
-                )
+                await callback.message.delete()
             except:
-                await callback.message.answer(
-                    "*📋 ОСНОВНЫЕ КОМАНДЫ*\n\n"
-                    ".me, .id, .chat — информация о вас/чате\n"
-                    ".business — ID бизнес-подключения\n"
-                    ".meta — данные сообщения в ответе\n"
-                    ".inf — показать это меню\n"
-                    ".ping — проверить задержку и состояние бота\n"
-                    ".time — текущее время МСК в формате [1:10]\n"
-                    ".date — текущая дата\n"
-                    ".cat — случайное изображение с котом\n"
-                    ".status — статистика чата с пользователем\n"
-                    ".clone — включить клонирование сообщений\n"
-                    ".unclone — выключить клонирование\n"
-                    ".copyp — скопировать ник, аватар и описание собеседника\n"
-                    ".uncopyp — вернуть свой исходный профиль",
-                    reply_markup=get_back_keyboard(),
-                    parse_mode="Markdown"
-                )
+                pass
+            await callback.message.answer(
+                "*📋 ОСНОВНЫЕ КОМАНДЫ*\n\n"
+                ".me, .id, .chat — информация о вас/чате\n"
+                ".business — ID бизнес-подключения\n"
+                ".meta — данные сообщения в ответе\n"
+                ".inf — показать это меню\n"
+                ".ping — проверить задержку и состояние бота\n"
+                ".time — текущее время МСК в формате [1:10]\n"
+                ".date — текущая дата\n"
+                ".cat — случайное изображение с котом\n"
+                ".status — статистика чата с пользователем\n"
+                ".clone — включить клонирование сообщений\n"
+                ".unclone — выключить клонирование\n"
+                ".copyp — скопировать ник, аватар и описание собеседника\n"
+                ".uncopyp — вернуть свой исходный профиль",
+                reply_markup=get_back_keyboard(),
+                parse_mode="Markdown"
+            )
             await callback.answer()
             return
         
         if data == "inf_probe":
             try:
-                await callback.message.edit_text(
-                    "*🔍 ПРОБИВЫ*\n\n"
-                    ".whois ip [IP] — Пробив IP-адреса\n"
-                    ".whois n [номер] — Пробив номера телефона\n"
-                    ".whois qz [@username] — Пробив по юзернейму\n"
-                    ".scan — Проверка файла на вирусы\n"
-                    ".scanurl [ссылка] — Проверка ссылки на вирусы/фишинг\n"
-                    ".sherlock [ник] — Поиск аккаунтов по никнейму\n"
-                    ".status — Статистика чата с пользователем",
-                    reply_markup=get_back_keyboard(),
-                    parse_mode="Markdown"
-                )
+                await callback.message.delete()
             except:
-                await callback.message.answer(
-                    "*🔍 ПРОБИВЫ*\n\n"
-                    ".whois ip [IP] — Пробив IP-адреса\n"
-                    ".whois n [номер] — Пробив номера телефона\n"
-                    ".whois qz [@username] — Пробив по юзернейму\n"
-                    ".scan — Проверка файла на вирусы\n"
-                    ".scanurl [ссылка] — Проверка ссылки на вирусы/фишинг\n"
-                    ".sherlock [ник] — Поиск аккаунтов по никнейму\n"
-                    ".status — Статистика чата с пользователем",
-                    reply_markup=get_back_keyboard(),
-                    parse_mode="Markdown"
-                )
+                pass
+            await callback.message.answer(
+                "*🔍 ПРОБИВЫ*\n\n"
+                ".whois ip [IP] — Пробив IP-адреса\n"
+                ".whois n [номер] — Пробив номера телефона\n"
+                ".whois qz [@username] — Пробив по юзернейму\n"
+                ".scan — Проверка файла на вирусы\n"
+                ".scanurl [ссылка] — Проверка ссылки на вирусы/фишинг\n"
+                ".sherlock [ник] — Поиск аккаунтов по никнейму\n"
+                ".status — Статистика чата с пользователем",
+                reply_markup=get_back_keyboard(),
+                parse_mode="Markdown"
+            )
             await callback.answer()
             return
         
         if data == "inf_admin":
             try:
-                await callback.message.edit_text(
-                    "*🛠️ АДМИН-КОМАНДЫ*\n\n"
-                    ".ban [ID] [время] [причина] [-s] [-g] — Забанить пользователя\n"
-                    ".unban [ID] [причина] [-g] — Разбанить пользователя\n"
-                    ".idlist — Список всех пользователей\n"
-                    ".logs [ID] — Логи пользователя\n"
-                    ".key — Создать ключ доступа\n"
-                    ".tex on/off — Включить/выключить техработы\n"
-                    ".stop [run/bot/max] max — Остановить раннеры",
-                    reply_markup=get_back_keyboard(),
-                    parse_mode="Markdown"
-                )
+                await callback.message.delete()
             except:
-                await callback.message.answer(
-                    "*🛠️ АДМИН-КОМАНДЫ*\n\n"
-                    ".ban [ID] [время] [причина] [-s] [-g] — Забанить пользователя\n"
-                    ".unban [ID] [причина] [-g] — Разбанить пользователя\n"
-                    ".idlist — Список всех пользователей\n"
-                    ".logs [ID] — Логи пользователя\n"
-                    ".key — Создать ключ доступа\n"
-                    ".tex on/off — Включить/выключить техработы\n"
-                    ".stop [run/bot/max] max — Остановить раннеры",
-                    reply_markup=get_back_keyboard(),
-                    parse_mode="Markdown"
-                )
+                pass
+            await callback.message.answer(
+                "*🛠️ АДМИН-КОМАНДЫ*\n\n"
+                ".ban [ID] [время] [причина] [-s] [-g] — Забанить пользователя\n"
+                ".unban [ID] [причина] [-g] — Разбанить пользователя\n"
+                ".idlist — Список всех пользователей\n"
+                ".logs [ID] — Логи пользователя\n"
+                ".tex on/off — Включить/выключить техработы\n"
+                ".stop [run/bot/max] max — Остановить раннеры",
+                reply_markup=get_back_keyboard(),
+                parse_mode="Markdown"
+            )
             await callback.answer()
             return
         
         if data == "inf_fun":
             try:
-                await callback.message.edit_text(
-                    "*🌟 РАЗВЛЕКАТЕЛЬНЫЕ (1/4)*\n\n"
-                    ".send — отправить фейковый чек\n"
-                    ".xrocket [сумма] — фейковый чек xRocket (USDT)\n"
-                    ".dox — пугающая анимация д0кса\n"
-                    ".snos — пугающая анимация сн0са\n"
-                    ".hack — пугающая анимация взлома\n"
-                    ".ddos — пугающая анимация DDoS\n"
-                    ".ban — пугающая анимация бана\n"
-                    ".spam [количество] [текст] — спам\n"
-                    ".love — красивая анимация сердца\n"
-                    ".arg [текст] — анимация появления текста\n"
-                    ".scrl [текст] — анимация прокрутки текста\n"
-                    ".print [текст] — эффект печати текста\n"
-                    ".glit [текст] — анимация с эффектом глитча\n"
-                    ".stairs [текст] — каждое слово отдельным сообщением\n"
-                    ".wave [текст] — нарастающая лесенка слов\n"
-                    ".letters [текст] — каждая буква отдельным сообщением\n"
-                    ".ghoul — анимация 1000-7",
-                    reply_markup=get_fun_keyboard(1),
-                    parse_mode="Markdown"
-                )
+                await callback.message.delete()
             except:
-                await callback.message.answer(
-                    "*🌟 РАЗВЛЕКАТЕЛЬНЫЕ (1/4)*\n\n"
-                    ".send — отправить фейковый чек\n"
-                    ".xrocket [сумма] — фейковый чек xRocket (USDT)\n"
-                    ".dox — пугающая анимация д0кса\n"
-                    ".snos — пугающая анимация сн0са\n"
-                    ".hack — пугающая анимация взлома\n"
-                    ".ddos — пугающая анимация DDoS\n"
-                    ".ban — пугающая анимация бана\n"
-                    ".spam [количество] [текст] — спам\n"
-                    ".love — красивая анимация сердца\n"
-                    ".arg [текст] — анимация появления текста\n"
-                    ".scrl [текст] — анимация прокрутки текста\n"
-                    ".print [текст] — эффект печати текста\n"
-                    ".glit [текст] — анимация с эффектом глитча\n"
-                    ".stairs [текст] — каждое слово отдельным сообщением\n"
-                    ".wave [текст] — нарастающая лесенка слов\n"
-                    ".letters [текст] — каждая буква отдельным сообщением\n"
-                    ".ghoul — анимация 1000-7",
-                    reply_markup=get_fun_keyboard(1),
-                    parse_mode="Markdown"
-                )
+                pass
+            await callback.message.answer(
+                "*🌟 РАЗВЛЕКАТЕЛЬНЫЕ (1/4)*\n\n"
+                ".send — отправить фейковый чек\n"
+                ".xrocket [сумма] — фейковый чек xRocket (USDT)\n"
+                ".dox — пугающая анимация д0кса\n"
+                ".snos — пугающая анимация сн0са\n"
+                ".hack — пугающая анимация взлома\n"
+                ".ddos — пугающая анимация DDoS\n"
+                ".ban — пугающая анимация бана\n"
+                ".spam [количество] [текст] — спам\n"
+                ".love — красивая анимация сердца\n"
+                ".arg [текст] — анимация появления текста\n"
+                ".scrl [текст] — анимация прокрутки текста\n"
+                ".print [текст] — эффект печати текста\n"
+                ".glit [текст] — анимация с эффектом глитча\n"
+                ".stairs [текст] — каждое слово отдельным сообщением\n"
+                ".wave [текст] — нарастающая лесенка слов\n"
+                ".letters [текст] — каждая буква отдельным сообщением\n"
+                ".ghoul — анимация 1000-7",
+                reply_markup=get_fun_keyboard(1),
+                parse_mode="Markdown"
+            )
             await callback.answer()
             return
         
         if data == "fun_page_2":
             try:
-                await callback.message.edit_text(
-                    "*🌟 РАЗВЛЕКАТЕЛЬНЫЕ (2/4)*\n\n"
-                    ".random [мин] [макс] — случайное число\n"
-                    ".flip — подбросить монетку\n"
-                    ".magic8 [вопрос] — магический шар 8\n"
-                    ".quote — случайная мотивационная цитата\n"
-                    ".rps [выбор] — камень, ножницы, бумага\n"
-                    ".slot — игровой автомат 🎰\n"
-                    ".coin — выбрать орла или решку\n"
-                    ".choose [вариант1 | вариант2] — случайный выбор\n"
-                    ".luck — узнать уровень удачи\n"
-                    ".fate — предсказать сегодняшний день\n"
-                    ".гадать [ник] — гадание на картах\n"
-                    ".мультик — пиксельный мультик из 🟦\n"
-                    ".meme — случайный мем (фото)\n"
-                    ".joke — случайная шутка\n"
-                    ".memer [текст] — мем-шаблон + ваш текст",
-                    reply_markup=get_fun_keyboard(2),
-                    parse_mode="Markdown"
-                )
+                await callback.message.delete()
             except:
-                await callback.message.answer(
-                    "*🌟 РАЗВЛЕКАТЕЛЬНЫЕ (2/4)*\n\n"
-                    ".random [мин] [макс] — случайное число\n"
-                    ".flip — подбросить монетку\n"
-                    ".magic8 [вопрос] — магический шар 8\n"
-                    ".quote — случайная мотивационная цитата\n"
-                    ".rps [выбор] — камень, ножницы, бумага\n"
-                    ".slot — игровой автомат 🎰\n"
-                    ".coin — выбрать орла или решку\n"
-                    ".choose [вариант1 | вариант2] — случайный выбор\n"
-                    ".luck — узнать уровень удачи\n"
-                    ".fate — предсказать сегодняшний день\n"
-                    ".гадать [ник] — гадание на картах\n"
-                    ".мультик — пиксельный мультик из 🟦\n"
-                    ".meme — случайный мем (фото)\n"
-                    ".joke — случайная шутка\n"
-                    ".memer [текст] — мем-шаблон + ваш текст",
-                    reply_markup=get_fun_keyboard(2),
-                    parse_mode="Markdown"
-                )
+                pass
+            await callback.message.answer(
+                "*🌟 РАЗВЛЕКАТЕЛЬНЫЕ (2/4)*\n\n"
+                ".random [мин] [макс] — случайное число\n"
+                ".flip — подбросить монетку\n"
+                ".magic8 [вопрос] — магический шар 8\n"
+                ".quote — случайная мотивационная цитата\n"
+                ".rps [выбор] — камень, ножницы, бумага\n"
+                ".slot — игровой автомат 🎰\n"
+                ".coin — выбрать орла или решку\n"
+                ".choose [вариант1 | вариант2] — случайный выбор\n"
+                ".luck — узнать уровень удачи\n"
+                ".fate — предсказать сегодняшний день\n"
+                ".гадать [ник] — гадание на картах\n"
+                ".мультик — пиксельный мультик из 🟦\n"
+                ".meme — случайный мем (фото)\n"
+                ".joke — случайная шутка\n"
+                ".memer [текст] — мем-шаблон + ваш текст",
+                reply_markup=get_fun_keyboard(2),
+                parse_mode="Markdown"
+            )
             await callback.answer()
             return
         
         if data == "inf_utils":
             try:
-                await callback.message.edit_text(
-                    "*🛠️ УТИЛИТЫ (1/3)*\n\n"
-                    ".mute [N] — мут (N мин или до .unmute)\n"
-                    ".unmute — выключить мут\n"
-                    ".nomute — обход мута (в чате даже под мутом; ЛС: /nomute)\n"
-                    ".unnomute — выключить обход мута\n"
-                    ".warn N — автомут после N сообщений\n"
-                    ".unwarn — снять warn\n"
-                    ".antispam on/off — антиспам\n"
-                    ".a_troll / .aut_troll / .stop_troll — троллинг",
-                    reply_markup=get_utils_keyboard(1),
-                    parse_mode="Markdown"
-                )
+                await callback.message.delete()
             except:
-                await callback.message.answer(
-                    "*🛠️ УТИЛИТЫ (1/3)*\n\n"
-                    ".mute [N] — мут (N мин или до .unmute)\n"
-                    ".unmute — выключить мут\n"
-                    ".nomute — обход мута (в чате даже под мутом; ЛС: /nomute)\n"
-                    ".unnomute — выключить обход мута\n"
-                    ".warn N — автомут после N сообщений\n"
-                    ".unwarn — снять warn\n"
-                    ".antispam on/off — антиспам\n"
-                    ".a_troll / .aut_troll / .stop_troll — троллинг",
-                    reply_markup=get_utils_keyboard(1),
-                    parse_mode="Markdown"
-                )
+                pass
+            await callback.message.answer(
+                "*🛠️ УТИЛИТЫ (1/3)*\n\n"
+                ".mute [N] — мут (N мин или до .unmute)\n"
+                ".unmute — выключить мут\n"
+                ".nomute — обход мута (в чате даже под мутом; ЛС: /nomute)\n"
+                ".unnomute — выключить обход мута\n"
+                ".warn N — автомут после N сообщений\n"
+                ".unwarn — снять warn\n"
+                ".antispam on/off — антиспам\n"
+                ".a_troll / .aut_troll / .stop_troll — троллинг",
+                reply_markup=get_utils_keyboard(1),
+                parse_mode="Markdown"
+            )
             await callback.answer()
             return
         
         if data == "utils_page_2":
             try:
-                await callback.message.edit_text(
-                    "*🛠️ УТИЛИТЫ (2/3)*\n\n"
-                    ".gift — отправка подарков за Stars\n"
-                    ".tool [вопрос] — ответ + топ‑3 сайта\n"
-                    ".pic [описание] — поиск картинки по описанию\n"
-                    ".proxies — свежие HTTP-прокси\n"
-                    ".leaks [email/телефон] — проверка по слитым базам\n"
-                    ".export — экспорт переписки в .txt\n"
-                    ".tempmail — временная почта (inbox в боте)\n"
-                    ".scam [текст] — проверка на скам/фишинг\n"
-                    ".место [город/адрес] — точка на карте",
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                        [
-                            InlineKeyboardButton(text="⬅️ Назад", callback_data="utils_page_1"),
-                            InlineKeyboardButton(text="📋 Меню", callback_data="show_inf"),
-                            InlineKeyboardButton(text="❌ Закрыть", callback_data="close_menu")
-                        ]
-                    ]),
-                    parse_mode="Markdown"
-                )
+                await callback.message.delete()
             except:
-                await callback.message.answer(
-                    "*🛠️ УТИЛИТЫ (2/3)*\n\n"
-                    ".gift — отправка подарков за Stars\n"
-                    ".tool [вопрос] — ответ + топ‑3 сайта\n"
-                    ".pic [описание] — поиск картинки по описанию\n"
-                    ".proxies — свежие HTTP-прокси\n"
-                    ".leaks [email/телефон] — проверка по слитым базам\n"
-                    ".export — экспорт переписки в .txt\n"
-                    ".tempmail — временная почта (inbox в боте)\n"
-                    ".scam [текст] — проверка на скам/фишинг\n"
-                    ".место [город/адрес] — точка на карте",
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                        [
-                            InlineKeyboardButton(text="⬅️ Назад", callback_data="utils_page_1"),
-                            InlineKeyboardButton(text="📋 Меню", callback_data="show_inf"),
-                            InlineKeyboardButton(text="❌ Закрыть", callback_data="close_menu")
-                        ]
-                    ]),
-                    parse_mode="Markdown"
-                )
+                pass
+            await callback.message.answer(
+                "*🛠️ УТИЛИТЫ (2/3)*\n\n"
+                ".gift — отправка подарков за Stars\n"
+                ".tool [вопрос] — ответ + топ‑3 сайта\n"
+                ".pic [описание] — поиск картинки по описанию\n"
+                ".proxies — свежие HTTP-прокси\n"
+                ".leaks [email/телефон] — проверка по слитым базам\n"
+                ".export — экспорт переписки в .txt\n"
+                ".tempmail — временная почта (inbox в боте)\n"
+                ".scam [текст] — проверка на скам/фишинг\n"
+                ".место [город/адрес] — точка на карте",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [
+                        InlineKeyboardButton(text="⬅️ Назад", callback_data="utils_page_1"),
+                        InlineKeyboardButton(text="📋 Меню", callback_data="show_inf"),
+                        InlineKeyboardButton(text="❌ Закрыть", callback_data="close_menu")
+                    ]
+                ]),
+                parse_mode="Markdown"
+            )
             await callback.answer()
             return
         
         if data == "inf_all":
             try:
-                await callback.message.edit_text(
-                    "*📚 ВСЕ КОМАНДЫ*\n\n"
-                    "🔹 ОСНОВНЫЕ:\n"
-                    ".me, .id, .chat — информация о вас/чате\n"
-                    ".business — ID бизнес-подключения\n"
-                    ".meta — данные сообщения в ответе\n"
-                    ".inf — показать это меню\n"
-                    ".ping — проверить задержку\n"
-                    ".time — текущее время МСК\n"
-                    ".date — текущая дата\n"
-                    ".cat — случайный кот\n"
-                    ".status — статистика чата\n"
-                    ".clone — включить клонирование\n"
-                    ".unclone — выключить клонирование\n"
-                    ".copyp — скопировать профиль\n"
-                    ".uncopyp — вернуть профиль\n\n"
-                    "🔹 ПРОБИВЫ:\n"
-                    ".whois ip [IP] — Пробив IP\n"
-                    ".whois n [номер] — Пробив номера\n"
-                    ".whois qz [@username] — Пробив юзера\n"
-                    ".scan — Проверка файла на вирусы\n"
-                    ".scanurl [ссылка] — Проверка ссылки\n"
-                    ".sherlock [ник] — Поиск аккаунтов\n\n"
-                    "🔹 АДМИН:\n"
-                    ".ban [ID] [время] [причина] [-s] [-g] — Бан\n"
-                    ".unban [ID] [причина] [-g] — Разбан\n"
-                    ".idlist — Список пользователей\n"
-                    ".logs [ID] — Логи пользователя\n"
-                    ".key — Создать ключ\n"
-                    ".tex on/off — Техработы\n"
-                    ".stop [run/bot/max] max — Остановить раннеры\n\n"
-                    "🔹 РАЗВЛЕКАТЕЛЬНЫЕ:\n"
-                    ".send, .xrocket, .dox, .snos, .hack, .ddos, .ban\n"
-                    ".spam, .love, .arg, .scrl, .print, .glit\n"
-                    ".stairs, .wave, .letters, .ghoul\n"
-                    ".random, .flip, .magic8, .quote, .rps, .slot\n"
-                    ".coin, .choose, .luck, .fate, .гадать, .мультик\n"
-                    ".meme, .joke, .memer\n\n"
-                    "🔹 УТИЛИТЫ:\n"
-                    ".password, .nickname, .correct, .rewrite\n"
-                    ".formal, .short, .expand, .detect\n"
-                    ".translate, .fixlayout, .summarize\n"
-                    ".upper, .lower, .title, .reverse, .leet, .zalgo\n"
-                    ".mute, .unmute, .nomute, .unnomute\n"
-                    ".warn, .unwarn, .antispam\n"
-                    ".gift, .tool, .pic, .proxies, .leaks, .export\n"
-                    ".tempmail, .scam, .место",
-                    reply_markup=get_back_keyboard(),
-                    parse_mode="Markdown"
-                )
+                await callback.message.delete()
             except:
-                await callback.message.answer(
-                    "*📚 ВСЕ КОМАНДЫ*\n\n"
-                    "🔹 ОСНОВНЫЕ:\n"
-                    ".me, .id, .chat — информация о вас/чате\n"
-                    ".business — ID бизнес-подключения\n"
-                    ".meta — данные сообщения в ответе\n"
-                    ".inf — показать это меню\n"
-                    ".ping — проверить задержку\n"
-                    ".time — текущее время МСК\n"
-                    ".date — текущая дата\n"
-                    ".cat — случайный кот\n"
-                    ".status — статистика чата\n"
-                    ".clone — включить клонирование\n"
-                    ".unclone — выключить клонирование\n"
-                    ".copyp — скопировать профиль\n"
-                    ".uncopyp — вернуть профиль\n\n"
-                    "🔹 ПРОБИВЫ:\n"
-                    ".whois ip [IP] — Пробив IP\n"
-                    ".whois n [номер] — Пробив номера\n"
-                    ".whois qz [@username] — Пробив юзера\n"
-                    ".scan — Проверка файла на вирусы\n"
-                    ".scanurl [ссылка] — Проверка ссылки\n"
-                    ".sherlock [ник] — Поиск аккаунтов\n\n"
-                    "🔹 АДМИН:\n"
-                    ".ban [ID] [время] [причина] [-s] [-g] — Бан\n"
-                    ".unban [ID] [причина] [-g] — Разбан\n"
-                    ".idlist — Список пользователей\n"
-                    ".logs [ID] — Логи пользователя\n"
-                    ".key — Создать ключ\n"
-                    ".tex on/off — Техработы\n"
-                    ".stop [run/bot/max] max — Остановить раннеры\n\n"
-                    "🔹 РАЗВЛЕКАТЕЛЬНЫЕ:\n"
-                    ".send, .xrocket, .dox, .snos, .hack, .ddos, .ban\n"
-                    ".spam, .love, .arg, .scrl, .print, .glit\n"
-                    ".stairs, .wave, .letters, .ghoul\n"
-                    ".random, .flip, .magic8, .quote, .rps, .slot\n"
-                    ".coin, .choose, .luck, .fate, .гадать, .мультик\n"
-                    ".meme, .joke, .memer\n\n"
-                    "🔹 УТИЛИТЫ:\n"
-                    ".password, .nickname, .correct, .rewrite\n"
-                    ".formal, .short, .expand, .detect\n"
-                    ".translate, .fixlayout, .summarize\n"
-                    ".upper, .lower, .title, .reverse, .leet, .zalgo\n"
-                    ".mute, .unmute, .nomute, .unnomute\n"
-                    ".warn, .unwarn, .antispam\n"
-                    ".gift, .tool, .pic, .proxies, .leaks, .export\n"
-                    ".tempmail, .scam, .место",
-                    reply_markup=get_back_keyboard(),
-                    parse_mode="Markdown"
-                )
+                pass
+            await callback.message.answer(
+                "*📚 ВСЕ КОМАНДЫ*\n\n"
+                "🔹 ОСНОВНЫЕ:\n"
+                ".me, .id, .chat — информация о вас/чате\n"
+                ".business — ID бизнес-подключения\n"
+                ".meta — данные сообщения в ответе\n"
+                ".inf — показать это меню\n"
+                ".ping — проверить задержку\n"
+                ".time — текущее время МСК\n"
+                ".date — текущая дата\n"
+                ".cat — случайный кот\n"
+                ".status — статистика чата\n"
+                ".clone — включить клонирование\n"
+                ".unclone — выключить клонирование\n"
+                ".copyp — скопировать профиль\n"
+                ".uncopyp — вернуть профиль\n\n"
+                "🔹 ПРОБИВЫ:\n"
+                ".whois ip [IP] — Пробив IP\n"
+                ".whois n [номер] — Пробив номера\n"
+                ".whois qz [@username] — Пробив юзера\n"
+                ".scan — Проверка файла на вирусы\n"
+                ".scanurl [ссылка] — Проверка ссылки\n"
+                ".sherlock [ник] — Поиск аккаунтов\n\n"
+                "🔹 АДМИН:\n"
+                ".ban [ID] [время] [причина] [-s] [-g] — Бан\n"
+                ".unban [ID] [причина] [-g] — Разбан\n"
+                ".idlist — Список пользователей\n"
+                ".logs [ID] — Логи пользователя\n"
+                ".tex on/off — Техработы\n"
+                ".stop [run/bot/max] max — Остановить раннеры\n\n"
+                "🔹 РАЗВЛЕКАТЕЛЬНЫЕ:\n"
+                ".send, .xrocket, .dox, .snos, .hack, .ddos, .ban\n"
+                ".spam, .love, .arg, .scrl, .print, .glit\n"
+                ".stairs, .wave, .letters, .ghoul\n"
+                ".random, .flip, .magic8, .quote, .rps, .slot\n"
+                ".coin, .choose, .luck, .fate, .гадать, .мультик\n"
+                ".meme, .joke, .memer\n\n"
+                "🔹 УТИЛИТЫ:\n"
+                ".password, .nickname, .correct, .rewrite\n"
+                ".formal, .short, .expand, .detect\n"
+                ".translate, .fixlayout, .summarize\n"
+                ".upper, .lower, .title, .reverse, .leet, .zalgo\n"
+                ".mute, .unmute, .nomute, .unnomute\n"
+                ".warn, .unwarn, .antispam\n"
+                ".gift, .tool, .pic, .proxies, .leaks, .export\n"
+                ".tempmail, .scam, .место",
+                reply_markup=get_back_keyboard(),
+                parse_mode="Markdown"
+            )
             await callback.answer()
             return
         
@@ -2122,13 +1801,9 @@ async def main():
     print(f"📁 Supabase: {SUPABASE_URL}")
     print("📌 Команды с / — в личке бота")
     print("📌 Команды с . — в чатах с собеседниками")
-    print("📌 Веб-команды — через сайт")
     print("=" * 60)
     
     os.makedirs('data', exist_ok=True)
-    
-    # Запускаем обработку веб-команд в фоне
-    asyncio.create_task(process_web_commands())
     
     try:
         await dp.start_polling(bot)
