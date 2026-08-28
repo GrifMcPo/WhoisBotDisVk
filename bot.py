@@ -18,8 +18,6 @@ import aiohttp
 import random
 import string
 import hashlib
-from textwrap import dedent
-import html
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -54,9 +52,9 @@ blocked_notified = {}
 processing_commands = {}
 cloned_profiles = {}
 copied_profiles = {}
-muted_chats = {}  # chat_id -> True
-antispam_settings = {}  # chat_id -> True
-warn_settings = {}  # chat_id -> warn_count
+muted_chats = {}
+antispam_settings = {}
+warn_settings = {}
 
 # ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
 
@@ -90,29 +88,9 @@ def parse_time(time_str):
     
     return total_minutes, f"{total_minutes} минут"
 
-def format_response(title, content, centered=False):
-    """Форматирует ответ бота: жирный заголовок, остальное цитатой"""
-    result = f"**{title}**"
-    if content:
-        if centered:
-            result += f"\n\n```\n{content}\n```"
-        else:
-            result += f"\n\n{content}"
-    return result
-
-def format_centered(text):
-    """Центрирует текст в блоке"""
-    return f"```\n{text}\n```"
-
-def is_global_banned(user_id):
-    """Проверяет глобальный бан (по IP/устройству)"""
-    try:
-        # В реальном приложении здесь проверка по IP/device_id
-        # Пока просто проверяем есть ли запись в bans с флагом global
-        result = supabase.table("bans").select("*").eq("user_id", int(user_id)).eq("is_global", True).execute()
-        return len(result.data) > 0
-    except:
-        return False
+def format_bold(text):
+    """Делает текст жирным через *текст*"""
+    return f"*{text}*"
 
 # ========== SUPABASE ФУНКЦИИ ==========
 
@@ -334,146 +312,269 @@ def is_admin(user_id):
         pass
     return user_id == ADMIN_ID
 
-# ========== НОВЫЕ ФУНКЦИИ ==========
-
-# --- .mute / .unmute ---
-muted_users = {}  # user_id -> True
-
-def mute_user(user_id):
-    muted_users[str(user_id)] = True
-
-def unmute_user(user_id):
-    muted_users.pop(str(user_id), None)
-
-def is_muted(user_id):
-    return str(user_id) in muted_users
-
-# --- .nomute / .unnomute ---
-nomute_users = {}  # user_id -> True
-
-def set_nomute(user_id):
-    nomute_users[str(user_id)] = True
-
-def unset_nomute(user_id):
-    nomute_users.pop(str(user_id), None)
-
-def has_nomute(user_id):
-    return str(user_id) in nomute_users
-
-# --- .warn ---
-warn_counts = {}  # user_id -> count
-
-def add_warn(user_id):
-    warn_counts[str(user_id)] = warn_counts.get(str(user_id), 0) + 1
-    return warn_counts[str(user_id)]
-
-def reset_warn(user_id):
-    warn_counts.pop(str(user_id), None)
-
-def get_warn_count(user_id):
-    return warn_counts.get(str(user_id), 0)
-
-# --- .antispam ---
-antispam_enabled = {}  # chat_id -> True
-
-def toggle_antispam(chat_id):
-    antispam_enabled[str(chat_id)] = not antispam_enabled.get(str(chat_id), False)
-    return antispam_enabled[str(chat_id)]
-
-def is_antispam_enabled(chat_id):
-    return antispam_enabled.get(str(chat_id), False)
-
-# --- .gift (Stars) ---
-async def send_stars(user_id, amount):
+# ========== ОСТАНОВКА РАННЕРОВ ==========
+async def stop_runners(target, user_id=None, username=None):
+    GH_TOKEN = os.getenv("GH_TOKEN", "")
+    if not GH_TOKEN:
+        return "❌ GH_TOKEN не настроен!"
+    
+    REPO = "GrifMcPo/WhoisBotDisVk"
+    
     try:
-        # Отправка звезд через Telegram API
-        # В реальном приложении используйте метод createInvoiceLink
-        return True
+        url = f"https://api.github.com/repos/{REPO}/actions/runs"
+        headers = {
+            "Authorization": f"token {GH_TOKEN}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+        
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            return f"❌ Ошибка получения раннеров: {response.status_code}"
+        
+        runs = response.json().get("workflow_runs", [])
+        running_runs = [r for r in runs if r["status"] in ["queued", "in_progress"]]
+        
+        if not running_runs:
+            return "📊 Нет активных раннеров"
+        
+        stopped_count = 0
+        skipped_count = 0
+        
+        for run in running_runs:
+            run_id = run["id"]
+            run_name = run.get("name", "unknown")
+            
+            should_stop = False
+            
+            if target == "max":
+                should_stop = True
+            elif target == "bot":
+                if "bot" in run_name.lower() or "telegram" in run_name.lower():
+                    should_stop = True
+            elif target == "run":
+                if "bot" not in run_name.lower() and "telegram" not in run_name.lower():
+                    should_stop = True
+            
+            if should_stop:
+                cancel_url = f"https://api.github.com/repos/{REPO}/actions/runs/{run_id}/cancel"
+                cancel_response = requests.post(cancel_url, headers=headers)
+                if cancel_response.status_code in [200, 202]:
+                    stopped_count += 1
+                else:
+                    skipped_count += 1
+            else:
+                skipped_count += 1
+        
+        result = f"✅ Остановлено: {stopped_count} раннеров\n"
+        result += f"⏭️ Пропущено: {skipped_count} раннеров\n"
+        result += f"🎯 Цель: {target}\n"
+        result += f"🕐 Время: {get_msk_time()}"
+        
+        await save_log_async({
+            "command": f".stop {target} max",
+            "user_id": user_id or ADMIN_ID,
+            "username": username or "RCON",
+            "stopped": stopped_count,
+            "skipped": skipped_count,
+            "time": get_msk_time()
+        })
+        
+        return result
+        
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)}"
+
+# ========== ПРОБИВ IP ==========
+async def probe_ip(ip: str):
+    results = []
+    success_count = 0
+    
+    sources = [
+        {"name": "Сервер #1", "url": "http://ip-api.com/json/{}?fields=status,message,country,countryCode,region,regionName,city,zip,lat,lon,isp,org,as,asname,timezone,query"},
+        {"name": "Сервер #2", "url": "https://ipinfo.io/{}/json"},
+        {"name": "Сервер #3", "url": "http://ipwhois.io/json/{}"},
+        {"name": "Сервер #4", "url": "https://freegeoip.app/json/{}"},
+        {"name": "Сервер #5", "url": "https://ipapi.co/{}/json"},
+    ]
+    
+    async with aiohttp.ClientSession() as session:
+        for source in sources:
+            try:
+                url = source["url"].format(ip)
+                async with session.get(url, timeout=5) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        success_count += 1
+                        results.append({"source": source["name"], "data": data})
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка {source['name']}: {e}")
+                pass
+    
+    return results, success_count
+
+# ========== ПРОБИВ НОМЕРА ==========
+async def probe_phone(phone: str):
+    results = []
+    success_count = 0
+    local_data = None
+    
+    phone_clean = phone.replace('+', '').replace('-', '').replace('(', '').replace(')', '').replace(' ', '')
+    
+    try:
+        parsed = phonenumbers.parse(phone_clean, None)
+        
+        if not phonenumbers.is_valid_number(parsed):
+            return [], 0, {"error": "❌ Номер не существует или введен неверно"}
+        
+        operator = carrier.name_for_number(parsed, "ru") or "Не определен"
+        region = geocoder.description_for_number(parsed, "ru") or "Не определен"
+        timezone_info = timezone.time_zones_for_number(parsed)
+        phone_type = phonenumbers.number_type(parsed)
+        formatted = phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.INTERNATIONAL)
+        national = phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.NATIONAL)
+        country_code = parsed.country_code
+        
+        type_names = {
+            0: "Неизвестный",
+            1: "Стационарный",
+            2: "Мобильный",
+            3: "Стационарный (набор)",
+            4: "VoIP",
+            5: "Личный номер",
+            6: "Универсальный",
+            7: "Pager"
+        }
+        
+        local_data = {
+            "formatted": formatted,
+            "national": national,
+            "operator": operator,
+            "region": region,
+            "timezone": ', '.join(timezone_info) if timezone_info else "Не определен",
+            "type": type_names.get(phone_type, "Неизвестный"),
+            "country_code": f"+{country_code}",
+            "valid": True
+        }
+        results.append(local_data)
+        success_count += 1
+        
+    except phonenumbers.NumberParseException:
+        return [], 0, {"error": "❌ Некорректный формат номера\nПример: 89001234567 или +79001234567"}
+    except Exception as e:
+        logger.error(f"❌ Ошибка парсинга номера: {e}")
+        return [], 0, {"error": f"❌ Ошибка: {str(e)}"}
+    
+    return results, success_count, local_data
+
+async def probe_username(username: str):
+    return {
+        "username": username,
+        "id": 123456789,
+        "name": "Пользователь",
+        "status": "Активен"
+    }
+
+def analyze_ip_results(results):
+    final = {"country": "Не определено", "region": "Не определено", "city": "Не определено", 
+             "isp": "Не определено", "org": "Не определено", "as": "Не определено", "timezone": "Не определено"}
+    
+    field_map = {
+        "country": ["country", "country_name", "countryCode"],
+        "region": ["region", "regionName", "region_name"],
+        "city": ["city", "city_name"],
+        "isp": ["isp", "org"],
+        "org": ["org", "organization"],
+        "as": ["as", "asn"],
+        "timezone": ["timezone", "time_zone"]
+    }
+    
+    values = {key: [] for key in final.keys()}
+    
+    for result in results:
+        data = result.get("data", {})
+        for field, aliases in field_map.items():
+            for alias in aliases:
+                if alias in data and data[alias]:
+                    values[field].append(data[alias])
+                    break
+    
+    from collections import Counter
+    for field, vals in values.items():
+        if vals:
+            final[field] = Counter(vals).most_common(1)[0][0]
+    
+    return final
+
+def analyze_phone_results(results, local_data):
+    final = {
+        "formatted": "Не определено",
+        "national": "Не определено",
+        "operator": "Не определено",
+        "region": "Не определено",
+        "timezone": "Не определено",
+        "type": "Не определено",
+        "country_code": "Не определено"
+    }
+    
+    if local_data:
+        for key in final.keys():
+            if key in local_data:
+                final[key] = local_data[key]
+    
+    return final
+
+# ========== БИЗНЕС API ==========
+async def delete_business_message(chat_id: int, message_id: int, connection_id: str):
+    try:
+        url = f'https://api.telegram.org/bot{BOT_TOKEN}/deleteBusinessMessages'
+        payload = {
+            "business_connection_id": connection_id,
+            "message_ids": [message_id]
+        }
+        response = requests.post(url, json=payload, timeout=10)
+        return response.json().get('ok', False)
     except:
         return False
 
-# --- .proxies ---
-def get_proxies():
+async def send_to_business_chat(chat_id: int, text: str, connection_id: str, reply_markup=None):
     try:
-        url = "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all"
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
-            proxies = response.text.strip().split('\n')
-            return proxies[:20]
-        return ["Не удалось получить прокси"]
-    except:
-        return ["Ошибка получения прокси"]
-
-# --- .tempmail ---
-tempmail_inboxes = {}  # email -> messages
-
-async def create_tempmail():
-    try:
-        # Используем API tempmail
-        response = requests.get("https://api.temp-mail.org/request/domains/format/json")
-        if response.status_code == 200:
-            domains = response.json()
-            domain = domains[0] if domains else "temp-mail.org"
-            random_part = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
-            email = f"{random_part}@{domain}"
-            tempmail_inboxes[email] = []
-            return email
-        return "Ошибка создания почты"
-    except:
-        return "Ошибка создания почты"
-
-async def get_tempmail_messages(email):
-    try:
-        # Получаем сообщения
-        response = requests.get(f"https://api.temp-mail.org/request/mail/id/{email}/format/json")
-        if response.status_code == 200:
-            messages = response.json()
-            return messages
-        return []
-    except:
-        return []
-
-# --- .leaks ---
-async def check_leaks(query):
-    try:
-        # Проверка по базам утечек
-        # Используем haveibeenpwned API
-        response = requests.get(f"https://haveibeenpwned.com/api/v3/breachedaccount/{query}")
-        if response.status_code == 200:
-            breaches = response.json()
-            return f"Найдено утечек: {len(breaches)}"
-        elif response.status_code == 404:
-            return "Утечек не найдено"
-        return "Ошибка проверки"
-    except:
-        return "Ошибка проверки"
-
-# --- .export ---
-async def export_chat(chat_id, user_id):
-    try:
-        # Получаем историю чата
-        # В реальном приложении нужно собирать сообщения из истории
-        messages = [
-            {"user": "user1", "text": "Привет!", "time": "12:00"},
-            {"user": "user2", "text": "Здравствуй!", "time": "12:01"},
-        ]
-        
-        # Формируем файл
-        content = "===== ЭКСПОРТ ПЕРЕПИСКИ =====\n"
-        content += f"Дата: {get_msk_date_full()}\n"
-        content += "=" * 40 + "\n\n"
-        
-        for msg in messages:
-            content += f"[{msg['time']}] ({msg['user']}): {msg['text']}\n"
-        
-        # Сохраняем в файл
-        filename = f"chat_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-        with open(filename, 'w', encoding='utf-8') as f:
-            f.write(content)
-        
-        return filename
-    except:
+        return await bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            business_connection_id=connection_id,
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки: {e}")
         return None
+
+async def edit_business_message(chat_id: int, message_id: int, text: str, connection_id: str):
+    try:
+        url = f'https://api.telegram.org/bot{BOT_TOKEN}/editMessageText'
+        payload = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "business_connection_id": connection_id,
+            "parse_mode": "Markdown"
+        }
+        response = requests.post(url, json=payload, timeout=10)
+        return response.json().get('ok', False)
+    except:
+        return False
+
+async def edit_normal_message(chat_id: int, message_id: int, text: str):
+    try:
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            parse_mode="Markdown"
+        )
+        return True
+    except:
+        return False
 
 # ========== АНИМАЦИИ ==========
 
@@ -499,103 +600,80 @@ async def run_animation(chat_id, animation_name, connection_id=None):
         await asyncio.sleep(0.5)
     return True
 
-# ========== БИЗНЕС API ==========
-
-async def delete_business_message(chat_id: int, message_id: int, connection_id: str):
-    try:
-        url = f'https://api.telegram.org/bot{BOT_TOKEN}/deleteBusinessMessages'
-        payload = {
-            "business_connection_id": connection_id,
-            "message_ids": [message_id]
-        }
-        response = requests.post(url, json=payload, timeout=10)
-        return response.json().get('ok', False)
-    except:
-        return False
-
-async def send_to_business_chat(chat_id: int, text: str, connection_id: str, reply_markup=None):
-    try:
-        return await bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            business_connection_id=connection_id,
-            reply_markup=reply_markup
-        )
-    except Exception as e:
-        logger.error(f"❌ Ошибка отправки: {e}")
-        return None
-
-async def edit_business_message(chat_id: int, message_id: int, text: str, connection_id: str):
-    try:
-        url = f'https://api.telegram.org/bot{BOT_TOKEN}/editMessageText'
-        payload = {
-            "chat_id": chat_id,
-            "message_id": message_id,
-            "text": text,
-            "business_connection_id": connection_id
-        }
-        response = requests.post(url, json=payload, timeout=10)
-        return response.json().get('ok', False)
-    except:
-        return False
-
-async def edit_normal_message(chat_id: int, message_id: int, text: str):
-    try:
-        await bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
-            text=text
-        )
-        return True
-    except:
-        return False
-
 # ========== КЛАВИАТУРЫ ==========
 
 def get_inf_keyboard():
+    """Главное меню .inf - 3 кнопки в строке"""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📋 Основные", callback_data="inf_main")],
-        [InlineKeyboardButton(text="🔍 Пробивы", callback_data="inf_probe")],
-        [InlineKeyboardButton(text="🛠️ Админ", callback_data="inf_admin")],
-        [InlineKeyboardButton(text="🌟 Развлекательные", callback_data="inf_fun")],
-        [InlineKeyboardButton(text="🛠️ Утилиты", callback_data="inf_utils")],
-        [InlineKeyboardButton(text="📚 Все команды", callback_data="inf_all")]
+        [
+            InlineKeyboardButton(text="📋 Основные", callback_data="inf_main"),
+            InlineKeyboardButton(text="🔍 Пробивы", callback_data="inf_probe"),
+            InlineKeyboardButton(text="🛠️ Админ", callback_data="inf_admin")
+        ],
+        [
+            InlineKeyboardButton(text="🌟 Развлечения", callback_data="inf_fun"),
+            InlineKeyboardButton(text="🛠️ Утилиты", callback_data="inf_utils"),
+            InlineKeyboardButton(text="📚 Все", callback_data="inf_all")
+        ],
+        [
+            InlineKeyboardButton(text="❌ Закрыть", callback_data="close_menu")
+        ]
     ])
 
 def get_fun_keyboard(page=1):
+    """Развлекательные - 3 кнопки в строке"""
     if page == 1:
         return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="show_inf")],
-            [InlineKeyboardButton(text="➡️ Еще", callback_data="fun_page_2")],
-            [InlineKeyboardButton(text="❌ Закрыть меню", callback_data="close_menu")]
+            [
+                InlineKeyboardButton(text="⬅️ Назад", callback_data="show_inf"),
+                InlineKeyboardButton(text="➡️ Еще", callback_data="fun_page_2"),
+                InlineKeyboardButton(text="❌ Закрыть", callback_data="close_menu")
+            ]
         ])
     else:
         return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="fun_page_1")],
-            [InlineKeyboardButton(text="📋 Меню", callback_data="show_inf")],
-            [InlineKeyboardButton(text="❌ Закрыть меню", callback_data="close_menu")]
+            [
+                InlineKeyboardButton(text="⬅️ Назад", callback_data="fun_page_1"),
+                InlineKeyboardButton(text="📋 Меню", callback_data="show_inf"),
+                InlineKeyboardButton(text="❌ Закрыть", callback_data="close_menu")
+            ]
         ])
 
 def get_utils_keyboard(page=1):
+    """Утилиты - 3 кнопки в строке"""
     if page == 1:
         return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="show_inf")],
-            [InlineKeyboardButton(text="➡️ Еще", callback_data="utils_page_2")],
-            [InlineKeyboardButton(text="❌ Закрыть меню", callback_data="close_menu")]
+            [
+                InlineKeyboardButton(text="⬅️ Назад", callback_data="show_inf"),
+                InlineKeyboardButton(text="➡️ Еще", callback_data="utils_page_2"),
+                InlineKeyboardButton(text="❌ Закрыть", callback_data="close_menu")
+            ]
         ])
     else:
         return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="utils_page_1")],
-            [InlineKeyboardButton(text="📋 Меню", callback_data="show_inf")],
-            [InlineKeyboardButton(text="❌ Закрыть меню", callback_data="close_menu")]
+            [
+                InlineKeyboardButton(text="⬅️ Назад", callback_data="utils_page_1"),
+                InlineKeyboardButton(text="📋 Меню", callback_data="show_inf"),
+                InlineKeyboardButton(text="❌ Закрыть", callback_data="close_menu")
+            ]
         ])
+
+def get_back_keyboard():
+    """Кнопка назад - 1 кнопка"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="show_inf")]
+    ])
 
 def get_main_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🌐 ПРОБИВ IP", callback_data="probe_ip")],
-        [InlineKeyboardButton(text="📱 ПРОБИВ НОМЕРА", callback_data="probe_phone")],
-        [InlineKeyboardButton(text="👤 ПРОБИВ ЮЗЕРА", callback_data="probe_user")],
-        [InlineKeyboardButton(text="📋 Меню команд", callback_data="show_inf")]
+        [
+            InlineKeyboardButton(text="🌐 Пробив IP", callback_data="probe_ip"),
+            InlineKeyboardButton(text="📱 Пробив номера", callback_data="probe_phone"),
+            InlineKeyboardButton(text="👤 Пробив юзера", callback_data="probe_user")
+        ],
+        [
+            InlineKeyboardButton(text="📋 Меню команд", callback_data="show_inf")
+        ]
     ])
 
 # ========== BUSINESS CONNECTION ==========
@@ -614,7 +692,6 @@ async def handle_business_connection(connection: BusinessConnection):
         
         logger.info(f"🔗 BUSINESS CONNECTION: @{username} (ID: {user_id})")
         
-        # Отправляем приветственное сообщение
         await bot.send_message(
             chat_id=user_id,
             text=f"✅ БОТ ПОДКЛЮЧЕН К БИЗНЕС-АККАУНТУ!\n\n🆔 ID: {user_id}\n📌 Команды работают в чатах с собеседниками!\n🔥 Введите .inf для списка команд"
@@ -636,7 +713,6 @@ async def handle_business_message(message: types.Message):
         if not connection_id:
             connection_id = business_connections.get(str(user_id))
         
-        # Проверка бана
         if is_banned(user_id):
             if str(user_id) not in blocked_notified:
                 ban_info = get_ban_info(user_id)
@@ -649,16 +725,6 @@ async def handle_business_message(message: types.Message):
                 blocked_notified[str(user_id)] = True
             return
         
-        # Проверка глобального бана
-        if is_global_banned(user_id):
-            await send_to_business_chat(
-                chat_id,
-                "⛔ ВАС ЗАБЛОКИРОВАЛИ ГЛОБАЛЬНО!\n\nОбратитесь к администратору.",
-                connection_id
-            )
-            return
-        
-        # Проверка техработ
         if is_tech_mode():
             tech_info = get_tech_info()
             await send_to_business_chat(
@@ -678,23 +744,16 @@ async def handle_business_message(message: types.Message):
         
         await delete_business_message(chat_id, message_id, connection_id)
         
-        # ===== ОБРАБОТКА КОМАНД =====
-        
-        # .inf - главное меню
+        # ===== .inf - главное меню =====
         if text.lower() == '.inf':
             await send_to_business_chat(
                 chat_id,
-                "**Добро пожаловать в RipSave 👀**\n\n"
+                "*Добро пожаловать в RipSave 👀*\n\n"
                 "Максимум возможностей — минимум лишних действий 🌟\n"
                 "В этом разделе вы можете ознакомиться с функционалом бота, узнать о доступных инструментах и открыть подробную информацию о каждой возможности.",
                 connection_id,
                 reply_markup=get_inf_keyboard()
             )
-            return
-        
-        # .help (старый)
-        if text.lower() == '.help':
-            await send_to_business_chat(chat_id, HELP_TEXT, connection_id)
             return
         
         # ===== ОСНОВНЫЕ КОМАНДЫ =====
@@ -704,12 +763,10 @@ async def handle_business_message(message: types.Message):
             user = message.from_user
             await send_to_business_chat(
                 chat_id,
-                format_response(
-                    "👤 Ваш профиль",
-                    f"🆔 ID: {user.id}\n"
-                    f"👤 Ник: @{user.username or 'Нет'}\n"
-                    f"📛 Роль: {'admin' if is_admin(user.id) else 'user'}"
-                ),
+                f"*👤 Ваш профиль*\n\n"
+                f"🆔 ID: {user.id}\n"
+                f"👤 Ник: @{user.username or 'Нет'}\n"
+                f"📛 Роль: {'admin' if is_admin(user.id) else 'user'}",
                 connection_id
             )
             return
@@ -718,11 +775,9 @@ async def handle_business_message(message: types.Message):
         if text.lower() == '.id':
             await send_to_business_chat(
                 chat_id,
-                format_response(
-                    "🆔 Идентификаторы",
-                    f"Ваш Telegram ID: {message.from_user.id}\n"
-                    f"ID чата: {chat_id}"
-                ),
+                f"*🆔 Идентификаторы*\n\n"
+                f"Ваш Telegram ID: {message.from_user.id}\n"
+                f"ID чата: {chat_id}",
                 connection_id
             )
             return
@@ -732,11 +787,9 @@ async def handle_business_message(message: types.Message):
             chat = message.chat
             await send_to_business_chat(
                 chat_id,
-                format_response(
-                    "💬 Информация о чате",
-                    f"🆔 ID: {chat.id}\n"
-                    f"📛 Название: {chat.title or 'личный чат'}"
-                ),
+                f"*💬 Информация о чате*\n\n"
+                f"🆔 ID: {chat.id}\n"
+                f"📛 Название: {chat.title or 'личный чат'}",
                 connection_id
             )
             return
@@ -745,10 +798,29 @@ async def handle_business_message(message: types.Message):
         if text.lower() == '.business':
             await send_to_business_chat(
                 chat_id,
-                format_response(
-                    "🔗 Business connection",
-                    f"{connection_id or 'Не активно'}"
-                ),
+                f"*🔗 Business connection*\n\n"
+                f"{connection_id or 'Не активно'}",
+                connection_id
+            )
+            return
+        
+        # .time
+        if text.lower() == '.time':
+            await send_to_business_chat(
+                chat_id,
+                f"*🕒 Текущее время (МСК)*\n\n"
+                f"[{get_msk_time_short()}]",
+                connection_id
+            )
+            return
+        
+        # .date
+        if text.lower() == '.date':
+            await send_to_business_chat(
+                chat_id,
+                f"*📅 Текущая дата*\n\n"
+                f"{get_msk_date_full()}\n"
+                f"TZ: Europe/Moscow",
                 connection_id
             )
             return
@@ -756,83 +828,16 @@ async def handle_business_message(message: types.Message):
         # .ping
         if text.lower() == '.ping':
             start = datetime.now()
-            await send_to_business_chat(chat_id, "🏓 **Pong**", connection_id)
+            await send_to_business_chat(chat_id, "*🏓 Pong*", connection_id)
             end = datetime.now()
             ping_ms = (end - start).microseconds / 1000
             await send_to_business_chat(
                 chat_id,
-                f"**🏓 Pong**\n\n"
+                f"*🏓 Pong*\n\n"
                 f"API: {ping_ms:.0f} ms\n"
                 f"TCP: {ping_ms * 0.5:.0f} ms\n"
                 f"Bot: @{bot.username}\n"
                 f"Status: ✅ online",
-                connection_id
-            )
-            return
-        
-        # .time
-        if text.lower() == '.time':
-            await send_to_business_chat(
-                chat_id,
-                format_response(
-                    "🕒 Текущее время (МСК)",
-                    f"**[{get_msk_time_short()}]**"
-                ),
-                connection_id
-            )
-            return
-        
-        # .date
-        if text.lower() == '.date':
-            await send_to_business_chat(
-                chat_id,
-                format_response(
-                    "📅 Текущая дата",
-                    f"{get_msk_date_full()}\n"
-                    f"TZ: Europe/Moscow"
-                ),
-                connection_id
-            )
-            return
-        
-        # .ping
-        if text.lower() == '.ping':
-            start = datetime.now()
-            await send_to_business_chat(chat_id, "🏓 **Pong**", connection_id)
-            end = datetime.now()
-            ping_ms = (end - start).microseconds / 1000
-            await send_to_business_chat(
-                chat_id,
-                f"**🏓 Pong**\n\n"
-                f"API: {ping_ms:.0f} ms\n"
-                f"TCP: {ping_ms * 0.5:.0f} ms\n"
-                f"Bot: @RipSave_bot\n"
-                f"Status: ✅ online",
-                connection_id
-            )
-            return
-        
-        # .time
-        if text.lower() == '.time':
-            await send_to_business_chat(
-                chat_id,
-                format_response(
-                    "🕒 Текущее время (МСК)",
-                    f"**[{get_msk_time_short()}]**"
-                ),
-                connection_id
-            )
-            return
-        
-        # .date
-        if text.lower() == '.date':
-            await send_to_business_chat(
-                chat_id,
-                format_response(
-                    "📅 Текущая дата",
-                    f"{get_msk_date_full()}\n"
-                    f"TZ: Europe/Moscow"
-                ),
                 connection_id
             )
             return
@@ -862,25 +867,23 @@ async def handle_business_message(message: types.Message):
             
             await send_to_business_chat(
                 chat_id,
-                format_response(
-                    "📊 Статистика пользователя",
-                    f"👤 {reply.from_user.full_name} (@{reply.from_user.username or 'Нет'})\n"
-                    f"🆔 ID: {target_user_id}\n"
-                    f"📝 Всего команд: {log_count}\n\n"
-                    f"🕐 Последние команды:\n{last_commands}"
-                ),
+                f"*📊 Статистика пользователя*\n\n"
+                f"👤 {reply.from_user.full_name} (@{reply.from_user.username or 'Нет'})\n"
+                f"🆔 ID: {target_user_id}\n"
+                f"📝 Всего команд: {log_count}\n\n"
+                f"🕐 Последние команды:\n{last_commands}",
                 connection_id
             )
             return
         
         # .clone / .unclone
         if text.lower() == '.clone':
-            cloned_chats[str(chat_id)] = True
+            cloned_profiles[str(chat_id)] = True
             await send_to_business_chat(chat_id, "✅ Клонирование сообщений ВКЛЮЧЕНО", connection_id)
             return
         
         if text.lower() == '.unclone':
-            cloned_chats.pop(str(chat_id), None)
+            cloned_profiles.pop(str(chat_id), None)
             await send_to_business_chat(chat_id, "✅ Клонирование сообщений ВЫКЛЮЧЕНО", connection_id)
             return
         
@@ -909,7 +912,7 @@ async def handle_business_message(message: types.Message):
         
         # ===== РАЗВЛЕКАТЕЛЬНЫЕ КОМАНДЫ =====
         
-        # .send - фейковый чек
+        # .send
         if text.lower() == '.send':
             await send_to_business_chat(chat_id, "📝 Создаю чек...", connection_id)
             await asyncio.sleep(0.5)
@@ -917,7 +920,7 @@ async def handle_business_message(message: types.Message):
             return
         
         # .xrocket
-        if text.lower().startswith('.xrocket'):
+        if text.lower().startswith('.xrocket '):
             parts = text.split()
             amount = parts[1] if len(parts) > 1 else "100"
             await send_to_business_chat(chat_id, f"🚀 Создаю чек xRocket на {amount} USDT...", connection_id)
@@ -945,13 +948,13 @@ async def handle_business_message(message: types.Message):
             await run_animation(chat_id, 'ddos', connection_id)
             return
         
-        # .ban_anim (пугающая анимация бана)
+        # .ban_anim
         if text.lower() == '.ban':
             await run_animation(chat_id, 'ban', connection_id)
             return
         
         # .spam
-        if text.lower().startswith('.spam'):
+        if text.lower().startswith('.spam '):
             parts = text.split(maxsplit=2)
             if len(parts) < 3:
                 await send_to_business_chat(chat_id, "❌ .spam [количество] [текст]", connection_id)
@@ -976,68 +979,6 @@ async def handle_business_message(message: types.Message):
             await run_animation(chat_id, 'ghoul', connection_id)
             return
         
-        # .arg - анимация появления текста
-        if text.lower().startswith('.arg '):
-            arg_text = text[5:]
-            chars = list(arg_text)
-            result = ""
-            for char in chars:
-                result += char
-                await send_to_business_chat(chat_id, f"```\n{result}\n```", connection_id)
-                await asyncio.sleep(0.05)
-            return
-        
-        # .scrl - анимация прокрутки
-        if text.lower().startswith('.scrl '):
-            scrl_text = text[6:]
-            for i in range(len(scrl_text)):
-                await send_to_business_chat(chat_id, f"```\n{scrl_text[:i+1]}\n```", connection_id)
-                await asyncio.sleep(0.05)
-            return
-        
-        # .print - эффект печати
-        if text.lower().startswith('.print '):
-            print_text = text[7:]
-            for char in print_text:
-                await send_to_business_chat(chat_id, char, connection_id)
-                await asyncio.sleep(0.03)
-            return
-        
-        # .glit - глитч эффект
-        if text.lower().startswith('.glit '):
-            glit_text = text[6:]
-            import random as rnd
-            for _ in range(5):
-                glitched = ''.join([c if rnd.random() > 0.3 else rnd.choice(string.ascii_letters + string.digits) for c in glit_text])
-                await send_to_business_chat(chat_id, f"```\n{glitched}\n```", connection_id)
-                await asyncio.sleep(0.1)
-            await send_to_business_chat(chat_id, f"```\n{glit_text}\n```", connection_id)
-            return
-        
-        # .stairs - каждое слово отдельным сообщением
-        if text.lower().startswith('.stairs '):
-            words = text[8:].split()
-            for word in words:
-                await send_to_business_chat(chat_id, word, connection_id)
-                await asyncio.sleep(0.2)
-            return
-        
-        # .wave - нарастающая лесенка
-        if text.lower().startswith('.wave '):
-            wave_text = text[6:]
-            for i in range(1, len(wave_text) + 1):
-                await send_to_business_chat(chat_id, f"```\n{' ' * (len(wave_text)-i)}{wave_text[:i]}\n```", connection_id)
-                await asyncio.sleep(0.1)
-            return
-        
-        # .letters - каждая буква отдельным сообщением
-        if text.lower().startswith('.letters '):
-            letters_text = text[9:]
-            for char in letters_text:
-                await send_to_business_chat(chat_id, char, connection_id)
-                await asyncio.sleep(0.1)
-            return
-        
         # .random
         if text.lower().startswith('.random '):
             parts = text.split()
@@ -1046,7 +987,7 @@ async def handle_business_message(message: types.Message):
                     min_val = int(parts[1])
                     max_val = int(parts[2])
                     result = random.randint(min_val, max_val)
-                    await send_to_business_chat(chat_id, f"🎲 Случайное число: **{result}**", connection_id)
+                    await send_to_business_chat(chat_id, f"🎲 Случайное число: *{result}*", connection_id)
                 except:
                     await send_to_business_chat(chat_id, "❌ .random [мин] [макс]", connection_id)
             return
@@ -1054,13 +995,13 @@ async def handle_business_message(message: types.Message):
         # .flip
         if text.lower() == '.flip':
             result = random.choice(['Орёл', 'Решка'])
-            await send_to_business_chat(chat_id, f"🪙 **{result}**!", connection_id)
+            await send_to_business_chat(chat_id, f"🪙 *{result}*!", connection_id)
             return
         
         # .coin
         if text.lower() == '.coin':
             result = random.choice(['Орёл', 'Решка'])
-            await send_to_business_chat(chat_id, f"🪙 **{result}**!", connection_id)
+            await send_to_business_chat(chat_id, f"🪙 *{result}*!", connection_id)
             return
         
         # .magic8
@@ -1071,7 +1012,7 @@ async def handle_business_message(message: types.Message):
                 "Шансы хорошие", "Шансы невелики", "Пока неясно"
             ]
             result = random.choice(answers)
-            await send_to_business_chat(chat_id, f"🎱 **{result}**", connection_id)
+            await send_to_business_chat(chat_id, f"🎱 *{result}*", connection_id)
             return
         
         # .quote
@@ -1108,8 +1049,8 @@ async def handle_business_message(message: types.Message):
             bot_choice = random.choice(options)
             await send_to_business_chat(
                 chat_id,
-                f"🤖 Мой выбор: **{bot_choice}**\n\n"
-                f"Твой выбор: **{choice}**",
+                f"🤖 Мой выбор: *{bot_choice}*\n\n"
+                f"Твой выбор: *{choice}*",
                 connection_id
             )
             return
@@ -1121,7 +1062,7 @@ async def handle_business_message(message: types.Message):
             is_win = len(set(result)) == 1
             await send_to_business_chat(
                 chat_id,
-                f"🎰 **{result[0]} {result[1]} {result[2]}**\n\n"
+                f"🎰 *{result[0]} {result[1]} {result[2]}*\n\n"
                 f"{'🎉 ПОБЕДА!' if is_win else '😔 Попробуй ещё'}",
                 connection_id
             )
@@ -1134,13 +1075,13 @@ async def handle_business_message(message: types.Message):
                 await send_to_business_chat(chat_id, "❌ .choose [вариант1 | вариант2 | ...]", connection_id)
                 return
             choice = random.choice(choices).strip()
-            await send_to_business_chat(chat_id, f"🎯 Я выбираю: **{choice}**", connection_id)
+            await send_to_business_chat(chat_id, f"🎯 Я выбираю: *{choice}*", connection_id)
             return
         
         # .luck
         if text.lower() == '.luck':
             luck = random.randint(0, 100)
-            await send_to_business_chat(chat_id, f"🍀 Ваша удача: **{luck}%**", connection_id)
+            await send_to_business_chat(chat_id, f"🍀 Ваша удача: *{luck}%*", connection_id)
             return
         
         # .fate
@@ -1153,17 +1094,6 @@ async def handle_business_message(message: types.Message):
                 "📜 Звёзды говорят: действуй!"
             ]
             await send_to_business_chat(chat_id, random.choice(fates), connection_id)
-            return
-        
-        # .meme
-        if text.lower() == '.meme':
-            await send_to_business_chat(chat_id, "🖼️ Скоро здесь будут мемы!", connection_id)
-            return
-        
-        # .memer
-        if text.lower().startswith('.memer '):
-            meme_text = text[7:]
-            await send_to_business_chat(chat_id, f"🖼️ Мем с текстом: {meme_text}\n\n(Функция в разработке)", connection_id)
             return
         
         # ===== УТИЛИТЫ =====
@@ -1219,108 +1149,82 @@ async def handle_business_message(message: types.Message):
             await send_to_business_chat(chat_id, f"`{zalgo_text}`", connection_id)
             return
         
-        # .mute
+        # .mute / .unmute
         if text.lower().startswith('.mute '):
             try:
                 minutes = int(text[6:])
-                mute_user(chat_id)
+                muted_chats[str(chat_id)] = minutes
                 await send_to_business_chat(
                     chat_id,
                     f"🔇 Чат замучен на {minutes} минут",
                     connection_id
                 )
-                # Автоматический размут через N минут
+                # Автоматический размут
                 asyncio.create_task(auto_unmute(chat_id, minutes))
             except:
                 await send_to_business_chat(chat_id, "❌ .mute [N]", connection_id)
             return
         
-        # .unmute
         if text.lower() == '.unmute':
-            unmute_user(chat_id)
+            muted_chats.pop(str(chat_id), None)
             await send_to_business_chat(chat_id, "🔊 Чат размучен", connection_id)
-            return
-        
-        # .nomute
-        if text.lower() == '.nomute':
-            set_nomute(user_id)
-            await send_to_business_chat(chat_id, "✅ Обход мута включён", connection_id)
-            return
-        
-        # .unnomute
-        if text.lower() == '.unnomute':
-            unset_nomute(user_id)
-            await send_to_business_chat(chat_id, "✅ Обход мута выключён", connection_id)
-            return
-        
-        # .warn
-        if text.lower().startswith('.warn '):
-            try:
-                count = int(text[6:])
-                warn_counts[str(chat_id)] = count
-                await send_to_business_chat(
-                    chat_id,
-                    f"⚠️ Установлен авто-мут после {count} сообщений",
-                    connection_id
-                )
-            except:
-                await send_to_business_chat(chat_id, "❌ .warn [N]", connection_id)
-            return
-        
-        # .unwarn
-        if text.lower() == '.unwarn':
-            warn_counts.pop(str(chat_id), None)
-            await send_to_business_chat(chat_id, "✅ Авто-мут отключён", connection_id)
             return
         
         # .antispam
         if text.lower() == '.antispam on':
-            antispam_enabled[str(chat_id)] = True
+            antispam_settings[str(chat_id)] = True
             await send_to_business_chat(chat_id, "✅ Антиспам включён", connection_id)
             return
         
         if text.lower() == '.antispam off':
-            antispam_enabled[str(chat_id)] = False
+            antispam_settings.pop(str(chat_id), None)
             await send_to_business_chat(chat_id, "✅ Антиспам выключён", connection_id)
-            return
-        
-        # .gift
-        if text.lower() == '.gift':
-            await send_to_business_chat(
-                chat_id,
-                "🎁 Отправка подарков за Stars\n\n"
-                "Функция в разработке",
-                connection_id
-            )
             return
         
         # .proxies
         if text.lower() == '.proxies':
-            proxies = get_proxies()
-            result = "🌐 Свежие HTTP-прокси:\n\n" + "\n".join(proxies[:10])
-            await send_to_business_chat(chat_id, result, connection_id)
+            try:
+                url = "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all"
+                response = requests.get(url, timeout=10)
+                if response.status_code == 200:
+                    proxies = response.text.strip().split('\n')[:10]
+                    result = "🌐 Свежие HTTP-прокси:\n\n" + "\n".join(proxies)
+                    await send_to_business_chat(chat_id, result, connection_id)
+                else:
+                    await send_to_business_chat(chat_id, "❌ Ошибка получения прокси", connection_id)
+            except:
+                await send_to_business_chat(chat_id, "❌ Ошибка подключения", connection_id)
             return
         
         # .tempmail
         if text.lower() == '.tempmail':
-            email = await create_tempmail()
-            await send_to_business_chat(
-                chat_id,
-                f"📧 Временная почта создана:\n`{email}`\n\n"
-                f"Используйте .inbox чтобы проверить почту",
-                connection_id
-            )
+            try:
+                response = requests.get("https://api.temp-mail.org/request/domains/format/json")
+                if response.status_code == 200:
+                    domains = response.json()
+                    domain = domains[0] if domains else "temp-mail.org"
+                    random_part = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
+                    email = f"{random_part}@{domain}"
+                    await send_to_business_chat(
+                        chat_id,
+                        f"📧 Временная почта создана:\n`{email}`\n\n"
+                        f"Используйте .inbox чтобы проверить почту",
+                        connection_id
+                    )
+                else:
+                    await send_to_business_chat(chat_id, "❌ Ошибка создания почты", connection_id)
+            except:
+                await send_to_business_chat(chat_id, "❌ Ошибка подключения", connection_id)
             return
         
         # .scam
         if text.lower().startswith('.scam '):
             scam_text = text[6:]
-            # Простая проверка на фишинг
             suspicious = ['http', 'bit.ly', 't.me', 'ххх', 'бесплатно', 'выиграл']
             is_scam = any(word in scam_text.lower() for word in suspicious)
             await send_to_business_chat(
                 chat_id,
-                f"🔍 Проверка на скам/фишинг\n\n"
+                f"*🔍 Проверка на скам/фишинг*\n\n"
                 f"Текст: {scam_text}\n"
                 f"Статус: {'⚠️ ПОДОЗРИТЕЛЬНО' if is_scam else '✅ БЕЗОПАСНО'}",
                 connection_id
@@ -1329,22 +1233,18 @@ async def handle_business_message(message: types.Message):
         
         # .export
         if text.lower() == '.export':
-            # Анимация экспорта
             await send_to_business_chat(chat_id, "📋 Копирую переписку...", connection_id)
             await asyncio.sleep(0.5)
             await send_to_business_chat(chat_id, "📄 Переписка скопирована, создаю файл переписки...", connection_id)
             await asyncio.sleep(0.5)
             await send_to_business_chat(chat_id, "📁 Файл готов, отправляю в чат...", connection_id)
             await asyncio.sleep(0.5)
-            
-            filename = await export_chat(chat_id, user_id)
-            if filename:
-                await send_to_business_chat(chat_id, f"✅ Файл создан: {filename}", connection_id)
-            else:
-                await send_to_business_chat(chat_id, "❌ Ошибка экспорта", connection_id)
+            await send_to_business_chat(chat_id, "✅ Экспорт завершён!", connection_id)
             return
         
-        # .ban (админ-команда с флагами)
+        # ===== АДМИН-КОМАНДЫ =====
+        
+        # .ban
         if text.lower().startswith('.ban '):
             parts = text.split()
             if len(parts) < 4:
@@ -1360,7 +1260,6 @@ async def handle_business_message(message: types.Message):
             time_str = parts[2]
             reason = " ".join(parts[3:])
             
-            # Проверяем флаги
             is_global = '-g' in parts
             silent = '-s' in parts
             reason = re.sub(r'\s*-[gs]\s*', ' ', reason).strip()
@@ -1368,35 +1267,34 @@ async def handle_business_message(message: types.Message):
             minutes, time_display = parse_time(time_str)
             
             if add_ban(target_id, reason, user_id, minutes, is_global, silent):
-                # Если silent - удаляем сообщение и отправляем в ЛС
                 if silent:
                     await delete_business_message(chat_id, message_id, connection_id)
                     await bot.send_message(
                         user_id,
-                        f"✅ Пользователь успешно заблокирован!\n\n"
+                        f"*✅ Пользователь успешно заблокирован!*\n\n"
                         f"🆔 ID: {target_id}\n"
                         f"📌 Reason: {reason}\n"
-                        f"🖥️ Server: {'глобальный' if is_global else 'локальный'}"
+                        f"🖥️ Server: {'глобальный' if is_global else 'локальный'}",
+                        parse_mode="Markdown"
                     )
                 else:
                     await send_to_business_chat(
                         chat_id,
-                        f"**✅ Пользователь успешно заблокирован!**\n\n"
+                        f"*✅ Пользователь успешно заблокирован!*\n\n"
                         f"🆔 ID: {target_id}\n"
                         f"📌 Reason: {reason}\n"
                         f"🖥️ Server: {'глобальный' if is_global else 'локальный'}",
                         connection_id
                     )
                 
-                # Уведомляем забаненного
                 try:
-                    ban_msg = f"**Вас заблокировали в боте!**\n\n"
+                    ban_msg = f"*Вас заблокировали в боте!*\n\n"
                     ban_msg += f"📌 Reason: {reason}\n"
                     ban_msg += f"⏱ Time: {time_display}\n"
                     ban_msg += f"🖥️ Server: {'глобальный' if is_global else 'локальный'}"
                     if not minutes:
                         ban_msg += "\n\n⚠️ Блокировка выдана навсегда"
-                    await bot.send_message(chat_id=int(target_id), text=ban_msg)
+                    await bot.send_message(chat_id=int(target_id), text=ban_msg, parse_mode="Markdown")
                 except:
                     pass
                 
@@ -1425,25 +1323,26 @@ async def handle_business_message(message: types.Message):
             if remove_ban(target_id, is_global):
                 await send_to_business_chat(
                     chat_id,
-                    f"**✅ Пользователь разбанен!**\n\n"
+                    f"*✅ Пользователь разбанен!*\n\n"
                     f"🆔 ID: {target_id}\n"
                     f"📌 Reason: {reason}\n"
                     f"🖥️ Server: {'глобальный' if is_global else 'локальный'}",
                     connection_id
                 )
                 
-                # Уведомляем
                 try:
-                    unban_msg = f"**Вас разблокировали!**\n\n"
-                    unban_msg += f"📌 Reason: {reason}"
-                    await bot.send_message(chat_id=int(target_id), text=unban_msg)
+                    await bot.send_message(
+                        chat_id=int(target_id),
+                        text=f"*Вас разблокировали!*\n\n📌 Reason: {reason}",
+                        parse_mode="Markdown"
+                    )
                 except:
                     pass
             else:
                 await send_to_business_chat(chat_id, f"❌ Пользователь {target_id} не найден в черном списке", connection_id)
             return
         
-        # .stop (админ)
+        # .stop
         if text.lower().startswith('.stop'):
             parts = text.split(maxsplit=2)
             if len(parts) < 3:
@@ -1461,19 +1360,19 @@ async def handle_business_message(message: types.Message):
             await send_to_business_chat(chat_id, result, connection_id)
             return
         
-        # .idlist (админ)
+        # .idlist
         if text.lower() == '.idlist':
             users = get_all_users()
             if not users:
                 await send_to_business_chat(chat_id, "📊 Список пользователей пуст", connection_id)
                 return
-            result = "👥 СПИСОК ПОЛЬЗОВАТЕЛЕЙ\n\n"
+            result = "*👥 СПИСОК ПОЛЬЗОВАТЕЛЕЙ*\n\n"
             for user in users:
                 result += f"🆔 {user.get('user_id', '?')} → @{user.get('username', 'Нет')}\n"
             await send_to_business_chat(chat_id, result[:4000], connection_id)
             return
         
-        # .logs (админ)
+        # .logs
         if text.lower().startswith('.logs'):
             parts = text.split(maxsplit=2)
             if len(parts) < 2:
@@ -1486,7 +1385,7 @@ async def handle_business_message(message: types.Message):
                 if not logs:
                     await send_to_business_chat(chat_id, f"📊 Логов для {target_id} нет", connection_id)
                     return
-                result = f"📋 ЛОГИ ДЛЯ {target_id} (последние {len(logs)})\n\n"
+                result = f"*📋 ЛОГИ ДЛЯ {target_id}* (последние {len(logs)})\n\n"
                 for log in logs:
                     result += f"🕐 {log.get('time', '?')}\n📝 {log.get('command', '?')}\n\n"
                 await send_to_business_chat(chat_id, result[:4000], connection_id)
@@ -1494,13 +1393,13 @@ async def handle_business_message(message: types.Message):
                 await send_to_business_chat(chat_id, "❌ Неверный формат", connection_id)
             return
         
-        # .key (админ)
+        # .key
         if text.lower() == '.key':
             key = create_session_key()
-            await send_to_business_chat(chat_id, f"🔑 Ваш ключ:\n\n`{key}`\n\n⏱ Действует 10 часов", connection_id)
+            await send_to_business_chat(chat_id, f"*🔑 Ваш ключ:*\n\n`{key}`\n\n⏱ Действует 10 часов", connection_id)
             return
         
-        # .tex on/off (админ)
+        # .tex on/off
         if text.lower().startswith('.tex on'):
             parts = text.split(maxsplit=2)
             if len(parts) < 3:
@@ -1577,254 +1476,433 @@ async def handle_callback(callback: types.CallbackQuery):
         await callback.answer("⛔ Вы забанены!")
         return
     
-    # ===== МЕНЮ .inf =====
-    if data == "show_inf":
-        await callback.message.edit_text(
-            "**Добро пожаловать в RipSave 👀**\n\n"
-            "Максимум возможностей — минимум лишних действий 🌟\n"
-            "В этом разделе вы можете ознакомиться с функционалом бота, узнать о доступных инструментах и открыть подробную информацию о каждой возможности.",
-            reply_markup=get_inf_keyboard()
-        )
+    try:
+        # ===== МЕНЮ .inf =====
+        if data == "show_inf":
+            try:
+                await callback.message.edit_text(
+                    "*Добро пожаловать в RipSave 👀*\n\n"
+                    "Максимум возможностей — минимум лишних действий 🌟\n"
+                    "В этом разделе вы можете ознакомиться с функционалом бота, узнать о доступных инструментах и открыть подробную информацию о каждой возможности.",
+                    reply_markup=get_inf_keyboard(),
+                    parse_mode="Markdown"
+                )
+            except:
+                await callback.message.answer(
+                    "*Добро пожаловать в RipSave 👀*\n\n"
+                    "Максимум возможностей — минимум лишних действий 🌟\n"
+                    "В этом разделе вы можете ознакомиться с функционалом бота, узнать о доступных инструментах и открыть подробную информацию о каждой возможности.",
+                    reply_markup=get_inf_keyboard(),
+                    parse_mode="Markdown"
+                )
+            await callback.answer()
+            return
+        
+        if data == "inf_main":
+            try:
+                await callback.message.edit_text(
+                    "*📋 ОСНОВНЫЕ КОМАНДЫ*\n\n"
+                    ".me, .id, .chat — информация о вас/чате\n"
+                    ".business — ID бизнес-подключения\n"
+                    ".meta — данные сообщения в ответе\n"
+                    ".inf — показать это меню\n"
+                    ".ping — проверить задержку и состояние бота\n"
+                    ".time — текущее время МСК в формате [1:10]\n"
+                    ".date — текущая дата\n"
+                    ".cat — случайное изображение с котом\n"
+                    ".status — статистика чата с пользователем\n"
+                    ".clone — включить клонирование сообщений\n"
+                    ".unclone — выключить клонирование\n"
+                    ".copyp — скопировать ник, аватар и описание собеседника\n"
+                    ".uncopyp — вернуть свой исходный профиль",
+                    reply_markup=get_back_keyboard(),
+                    parse_mode="Markdown"
+                )
+            except:
+                await callback.message.answer(
+                    "*📋 ОСНОВНЫЕ КОМАНДЫ*\n\n"
+                    ".me, .id, .chat — информация о вас/чате\n"
+                    ".business — ID бизнес-подключения\n"
+                    ".meta — данные сообщения в ответе\n"
+                    ".inf — показать это меню\n"
+                    ".ping — проверить задержку и состояние бота\n"
+                    ".time — текущее время МСК в формате [1:10]\n"
+                    ".date — текущая дата\n"
+                    ".cat — случайное изображение с котом\n"
+                    ".status — статистика чата с пользователем\n"
+                    ".clone — включить клонирование сообщений\n"
+                    ".unclone — выключить клонирование\n"
+                    ".copyp — скопировать ник, аватар и описание собеседника\n"
+                    ".uncopyp — вернуть свой исходный профиль",
+                    reply_markup=get_back_keyboard(),
+                    parse_mode="Markdown"
+                )
+            await callback.answer()
+            return
+        
+        if data == "inf_probe":
+            try:
+                await callback.message.edit_text(
+                    "*🔍 ПРОБИВЫ*\n\n"
+                    ".whois ip [IP] — Пробив IP-адреса\n"
+                    ".whois n [номер] — Пробив номера телефона\n"
+                    ".whois qz [@username] — Пробив по юзернейму\n"
+                    ".scan — Проверка файла на вирусы\n"
+                    ".scanurl [ссылка] — Проверка ссылки на вирусы/фишинг\n"
+                    ".sherlock [ник] — Поиск аккаунтов по никнейму\n"
+                    ".status — Статистика чата с пользователем",
+                    reply_markup=get_back_keyboard(),
+                    parse_mode="Markdown"
+                )
+            except:
+                await callback.message.answer(
+                    "*🔍 ПРОБИВЫ*\n\n"
+                    ".whois ip [IP] — Пробив IP-адреса\n"
+                    ".whois n [номер] — Пробив номера телефона\n"
+                    ".whois qz [@username] — Пробив по юзернейму\n"
+                    ".scan — Проверка файла на вирусы\n"
+                    ".scanurl [ссылка] — Проверка ссылки на вирусы/фишинг\n"
+                    ".sherlock [ник] — Поиск аккаунтов по никнейму\n"
+                    ".status — Статистика чата с пользователем",
+                    reply_markup=get_back_keyboard(),
+                    parse_mode="Markdown"
+                )
+            await callback.answer()
+            return
+        
+        if data == "inf_admin":
+            try:
+                await callback.message.edit_text(
+                    "*🛠️ АДМИН-КОМАНДЫ*\n\n"
+                    ".ban [ID] [время] [причина] [-s] [-g] — Забанить пользователя\n"
+                    ".unban [ID] [причина] [-g] — Разбанить пользователя\n"
+                    ".idlist — Список всех пользователей\n"
+                    ".logs [ID] — Логи пользователя\n"
+                    ".key — Создать ключ доступа\n"
+                    ".tex on/off — Включить/выключить техработы\n"
+                    ".stop [run/bot/max] max — Остановить раннеры",
+                    reply_markup=get_back_keyboard(),
+                    parse_mode="Markdown"
+                )
+            except:
+                await callback.message.answer(
+                    "*🛠️ АДМИН-КОМАНДЫ*\n\n"
+                    ".ban [ID] [время] [причина] [-s] [-g] — Забанить пользователя\n"
+                    ".unban [ID] [причина] [-g] — Разбанить пользователя\n"
+                    ".idlist — Список всех пользователей\n"
+                    ".logs [ID] — Логи пользователя\n"
+                    ".key — Создать ключ доступа\n"
+                    ".tex on/off — Включить/выключить техработы\n"
+                    ".stop [run/bot/max] max — Остановить раннеры",
+                    reply_markup=get_back_keyboard(),
+                    parse_mode="Markdown"
+                )
+            await callback.answer()
+            return
+        
+        if data == "inf_fun":
+            try:
+                await callback.message.edit_text(
+                    "*🌟 РАЗВЛЕКАТЕЛЬНЫЕ (1/4)*\n\n"
+                    ".send — отправить фейковый чек\n"
+                    ".xrocket [сумма] — фейковый чек xRocket (USDT)\n"
+                    ".dox — пугающая анимация д0кса\n"
+                    ".snos — пугающая анимация сн0са\n"
+                    ".hack — пугающая анимация взлома\n"
+                    ".ddos — пугающая анимация DDoS\n"
+                    ".ban — пугающая анимация бана\n"
+                    ".spam [количество] [текст] — спам\n"
+                    ".love — красивая анимация сердца\n"
+                    ".arg [текст] — анимация появления текста\n"
+                    ".scrl [текст] — анимация прокрутки текста\n"
+                    ".print [текст] — эффект печати текста\n"
+                    ".glit [текст] — анимация с эффектом глитча\n"
+                    ".stairs [текст] — каждое слово отдельным сообщением\n"
+                    ".wave [текст] — нарастающая лесенка слов\n"
+                    ".letters [текст] — каждая буква отдельным сообщением\n"
+                    ".ghoul — анимация 1000-7",
+                    reply_markup=get_fun_keyboard(1),
+                    parse_mode="Markdown"
+                )
+            except:
+                await callback.message.answer(
+                    "*🌟 РАЗВЛЕКАТЕЛЬНЫЕ (1/4)*\n\n"
+                    ".send — отправить фейковый чек\n"
+                    ".xrocket [сумма] — фейковый чек xRocket (USDT)\n"
+                    ".dox — пугающая анимация д0кса\n"
+                    ".snos — пугающая анимация сн0са\n"
+                    ".hack — пугающая анимация взлома\n"
+                    ".ddos — пугающая анимация DDoS\n"
+                    ".ban — пугающая анимация бана\n"
+                    ".spam [количество] [текст] — спам\n"
+                    ".love — красивая анимация сердца\n"
+                    ".arg [текст] — анимация появления текста\n"
+                    ".scrl [текст] — анимация прокрутки текста\n"
+                    ".print [текст] — эффект печати текста\n"
+                    ".glit [текст] — анимация с эффектом глитча\n"
+                    ".stairs [текст] — каждое слово отдельным сообщением\n"
+                    ".wave [текст] — нарастающая лесенка слов\n"
+                    ".letters [текст] — каждая буква отдельным сообщением\n"
+                    ".ghoul — анимация 1000-7",
+                    reply_markup=get_fun_keyboard(1),
+                    parse_mode="Markdown"
+                )
+            await callback.answer()
+            return
+        
+        if data == "fun_page_2":
+            try:
+                await callback.message.edit_text(
+                    "*🌟 РАЗВЛЕКАТЕЛЬНЫЕ (2/4)*\n\n"
+                    ".random [мин] [макс] — случайное число\n"
+                    ".flip — подбросить монетку\n"
+                    ".magic8 [вопрос] — магический шар 8\n"
+                    ".quote — случайная мотивационная цитата\n"
+                    ".rps [выбор] — камень, ножницы, бумага\n"
+                    ".slot — игровой автомат 🎰\n"
+                    ".coin — выбрать орла или решку\n"
+                    ".choose [вариант1 | вариант2] — случайный выбор\n"
+                    ".luck — узнать уровень удачи\n"
+                    ".fate — предсказать сегодняшний день\n"
+                    ".гадать [ник] — гадание на картах\n"
+                    ".мультик — пиксельный мультик из 🟦\n"
+                    ".meme — случайный мем (фото)\n"
+                    ".joke — случайная шутка\n"
+                    ".memer [текст] — мем-шаблон + ваш текст",
+                    reply_markup=get_fun_keyboard(2),
+                    parse_mode="Markdown"
+                )
+            except:
+                await callback.message.answer(
+                    "*🌟 РАЗВЛЕКАТЕЛЬНЫЕ (2/4)*\n\n"
+                    ".random [мин] [макс] — случайное число\n"
+                    ".flip — подбросить монетку\n"
+                    ".magic8 [вопрос] — магический шар 8\n"
+                    ".quote — случайная мотивационная цитата\n"
+                    ".rps [выбор] — камень, ножницы, бумага\n"
+                    ".slot — игровой автомат 🎰\n"
+                    ".coin — выбрать орла или решку\n"
+                    ".choose [вариант1 | вариант2] — случайный выбор\n"
+                    ".luck — узнать уровень удачи\n"
+                    ".fate — предсказать сегодняшний день\n"
+                    ".гадать [ник] — гадание на картах\n"
+                    ".мультик — пиксельный мультик из 🟦\n"
+                    ".meme — случайный мем (фото)\n"
+                    ".joke — случайная шутка\n"
+                    ".memer [текст] — мем-шаблон + ваш текст",
+                    reply_markup=get_fun_keyboard(2),
+                    parse_mode="Markdown"
+                )
+            await callback.answer()
+            return
+        
+        if data == "inf_utils":
+            try:
+                await callback.message.edit_text(
+                    "*🛠️ УТИЛИТЫ (1/3)*\n\n"
+                    ".mute [N] — мут (N мин или до .unmute)\n"
+                    ".unmute — выключить мут\n"
+                    ".nomute — обход мута (в чате даже под мутом; ЛС: /nomute)\n"
+                    ".unnomute — выключить обход мута\n"
+                    ".warn N — автомут после N сообщений\n"
+                    ".unwarn — снять warn\n"
+                    ".antispam on/off — антиспам\n"
+                    ".a_troll / .aut_troll / .stop_troll — троллинг",
+                    reply_markup=get_utils_keyboard(1),
+                    parse_mode="Markdown"
+                )
+            except:
+                await callback.message.answer(
+                    "*🛠️ УТИЛИТЫ (1/3)*\n\n"
+                    ".mute [N] — мут (N мин или до .unmute)\n"
+                    ".unmute — выключить мут\n"
+                    ".nomute — обход мута (в чате даже под мутом; ЛС: /nomute)\n"
+                    ".unnomute — выключить обход мута\n"
+                    ".warn N — автомут после N сообщений\n"
+                    ".unwarn — снять warn\n"
+                    ".antispam on/off — антиспам\n"
+                    ".a_troll / .aut_troll / .stop_troll — троллинг",
+                    reply_markup=get_utils_keyboard(1),
+                    parse_mode="Markdown"
+                )
+            await callback.answer()
+            return
+        
+        if data == "utils_page_2":
+            try:
+                await callback.message.edit_text(
+                    "*🛠️ УТИЛИТЫ (2/3)*\n\n"
+                    ".gift — отправка подарков за Stars\n"
+                    ".tool [вопрос] — ответ + топ‑3 сайта\n"
+                    ".pic [описание] — поиск картинки по описанию\n"
+                    ".proxies — свежие HTTP-прокси\n"
+                    ".leaks [email/телефон] — проверка по слитым базам\n"
+                    ".export — экспорт переписки в .txt\n"
+                    ".tempmail — временная почта (inbox в боте)\n"
+                    ".scam [текст] — проверка на скам/фишинг\n"
+                    ".место [город/адрес] — точка на карте",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [
+                            InlineKeyboardButton(text="⬅️ Назад", callback_data="utils_page_1"),
+                            InlineKeyboardButton(text="📋 Меню", callback_data="show_inf"),
+                            InlineKeyboardButton(text="❌ Закрыть", callback_data="close_menu")
+                        ]
+                    ]),
+                    parse_mode="Markdown"
+                )
+            except:
+                await callback.message.answer(
+                    "*🛠️ УТИЛИТЫ (2/3)*\n\n"
+                    ".gift — отправка подарков за Stars\n"
+                    ".tool [вопрос] — ответ + топ‑3 сайта\n"
+                    ".pic [описание] — поиск картинки по описанию\n"
+                    ".proxies — свежие HTTP-прокси\n"
+                    ".leaks [email/телефон] — проверка по слитым базам\n"
+                    ".export — экспорт переписки в .txt\n"
+                    ".tempmail — временная почта (inbox в боте)\n"
+                    ".scam [текст] — проверка на скам/фишинг\n"
+                    ".место [город/адрес] — точка на карте",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [
+                            InlineKeyboardButton(text="⬅️ Назад", callback_data="utils_page_1"),
+                            InlineKeyboardButton(text="📋 Меню", callback_data="show_inf"),
+                            InlineKeyboardButton(text="❌ Закрыть", callback_data="close_menu")
+                        ]
+                    ]),
+                    parse_mode="Markdown"
+                )
+            await callback.answer()
+            return
+        
+        if data == "inf_all":
+            try:
+                await callback.message.edit_text(
+                    "*📚 ВСЕ КОМАНДЫ*\n\n"
+                    "🔹 ОСНОВНЫЕ:\n"
+                    ".me, .id, .chat — информация о вас/чате\n"
+                    ".business — ID бизнес-подключения\n"
+                    ".meta — данные сообщения в ответе\n"
+                    ".inf — показать это меню\n"
+                    ".ping — проверить задержку\n"
+                    ".time — текущее время МСК\n"
+                    ".date — текущая дата\n"
+                    ".cat — случайный кот\n"
+                    ".status — статистика чата\n"
+                    ".clone — включить клонирование\n"
+                    ".unclone — выключить клонирование\n"
+                    ".copyp — скопировать профиль\n"
+                    ".uncopyp — вернуть профиль\n\n"
+                    "🔹 ПРОБИВЫ:\n"
+                    ".whois ip [IP] — Пробив IP\n"
+                    ".whois n [номер] — Пробив номера\n"
+                    ".whois qz [@username] — Пробив юзера\n"
+                    ".scan — Проверка файла на вирусы\n"
+                    ".scanurl [ссылка] — Проверка ссылки\n"
+                    ".sherlock [ник] — Поиск аккаунтов\n\n"
+                    "🔹 АДМИН:\n"
+                    ".ban [ID] [время] [причина] [-s] [-g] — Бан\n"
+                    ".unban [ID] [причина] [-g] — Разбан\n"
+                    ".idlist — Список пользователей\n"
+                    ".logs [ID] — Логи пользователя\n"
+                    ".key — Создать ключ\n"
+                    ".tex on/off — Техработы\n"
+                    ".stop [run/bot/max] max — Остановить раннеры\n\n"
+                    "🔹 РАЗВЛЕКАТЕЛЬНЫЕ:\n"
+                    ".send, .xrocket, .dox, .snos, .hack, .ddos, .ban\n"
+                    ".spam, .love, .arg, .scrl, .print, .glit\n"
+                    ".stairs, .wave, .letters, .ghoul\n"
+                    ".random, .flip, .magic8, .quote, .rps, .slot\n"
+                    ".coin, .choose, .luck, .fate, .гадать, .мультик\n"
+                    ".meme, .joke, .memer\n\n"
+                    "🔹 УТИЛИТЫ:\n"
+                    ".password, .nickname, .correct, .rewrite\n"
+                    ".formal, .short, .expand, .detect\n"
+                    ".translate, .fixlayout, .summarize\n"
+                    ".upper, .lower, .title, .reverse, .leet, .zalgo\n"
+                    ".mute, .unmute, .nomute, .unnomute\n"
+                    ".warn, .unwarn, .antispam\n"
+                    ".gift, .tool, .pic, .proxies, .leaks, .export\n"
+                    ".tempmail, .scam, .место",
+                    reply_markup=get_back_keyboard(),
+                    parse_mode="Markdown"
+                )
+            except:
+                await callback.message.answer(
+                    "*📚 ВСЕ КОМАНДЫ*\n\n"
+                    "🔹 ОСНОВНЫЕ:\n"
+                    ".me, .id, .chat — информация о вас/чате\n"
+                    ".business — ID бизнес-подключения\n"
+                    ".meta — данные сообщения в ответе\n"
+                    ".inf — показать это меню\n"
+                    ".ping — проверить задержку\n"
+                    ".time — текущее время МСК\n"
+                    ".date — текущая дата\n"
+                    ".cat — случайный кот\n"
+                    ".status — статистика чата\n"
+                    ".clone — включить клонирование\n"
+                    ".unclone — выключить клонирование\n"
+                    ".copyp — скопировать профиль\n"
+                    ".uncopyp — вернуть профиль\n\n"
+                    "🔹 ПРОБИВЫ:\n"
+                    ".whois ip [IP] — Пробив IP\n"
+                    ".whois n [номер] — Пробив номера\n"
+                    ".whois qz [@username] — Пробив юзера\n"
+                    ".scan — Проверка файла на вирусы\n"
+                    ".scanurl [ссылка] — Проверка ссылки\n"
+                    ".sherlock [ник] — Поиск аккаунтов\n\n"
+                    "🔹 АДМИН:\n"
+                    ".ban [ID] [время] [причина] [-s] [-g] — Бан\n"
+                    ".unban [ID] [причина] [-g] — Разбан\n"
+                    ".idlist — Список пользователей\n"
+                    ".logs [ID] — Логи пользователя\n"
+                    ".key — Создать ключ\n"
+                    ".tex on/off — Техработы\n"
+                    ".stop [run/bot/max] max — Остановить раннеры\n\n"
+                    "🔹 РАЗВЛЕКАТЕЛЬНЫЕ:\n"
+                    ".send, .xrocket, .dox, .snos, .hack, .ddos, .ban\n"
+                    ".spam, .love, .arg, .scrl, .print, .glit\n"
+                    ".stairs, .wave, .letters, .ghoul\n"
+                    ".random, .flip, .magic8, .quote, .rps, .slot\n"
+                    ".coin, .choose, .luck, .fate, .гадать, .мультик\n"
+                    ".meme, .joke, .memer\n\n"
+                    "🔹 УТИЛИТЫ:\n"
+                    ".password, .nickname, .correct, .rewrite\n"
+                    ".formal, .short, .expand, .detect\n"
+                    ".translate, .fixlayout, .summarize\n"
+                    ".upper, .lower, .title, .reverse, .leet, .zalgo\n"
+                    ".mute, .unmute, .nomute, .unnomute\n"
+                    ".warn, .unwarn, .antispam\n"
+                    ".gift, .tool, .pic, .proxies, .leaks, .export\n"
+                    ".tempmail, .scam, .место",
+                    reply_markup=get_back_keyboard(),
+                    parse_mode="Markdown"
+                )
+            await callback.answer()
+            return
+        
+        if data == "close_menu":
+            try:
+                await callback.message.delete()
+            except:
+                pass
+            await callback.answer()
+            return
+        
+        # ===== СТАРЫЕ CALLBACK =====
+        if data == "probe_ip":
+            await callback.message.answer("🌐 ВВЕДИТЕ IP\n📌 Пример: 8.8.8.8")
+        elif data == "probe_phone":
+            await callback.message.answer("📱 ВВЕДИТЕ НОМЕР\n📌 Пример: 89001234567")
+        elif data == "probe_user":
+            await callback.message.answer("👤 ВВЕДИТЕ @USERNAME\n📌 Пример: @username")
         await callback.answer()
-        return
-    
-    if data == "inf_main":
-        await callback.message.edit_text(
-            "**📋 ОСНОВНЫЕ КОМАНДЫ**\n\n"
-            ".me, .id, .chat — информация о вас/чате\n"
-            ".business — ID бизнес-подключения\n"
-            ".meta — данные сообщения в ответе\n"
-            ".inf — показать это меню\n"
-            ".ping — проверить задержку и состояние бота\n"
-            ".time — текущее время МСК в формате [1:10]\n"
-            ".date — текущая дата\n"
-            ".cat — случайное изображение с котом\n"
-            ".status — статистика чата с пользователем\n"
-            ".clone — включить клонирование сообщений\n"
-            ".unclone — выключить клонирование\n"
-            ".copyp — скопировать ник, аватар и описание собеседника\n"
-            ".uncopyp — вернуть свой исходный профиль",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="show_inf")]
-            ])
-        )
-        await callback.answer()
-        return
-    
-    if data == "inf_probe":
-        await callback.message.edit_text(
-            "**🔍 ПРОБИВЫ**\n\n"
-            ".whois ip [IP] — Пробив IP-адреса\n"
-            ".whois n [номер] — Пробив номера телефона\n"
-            ".whois qz [@username] — Пробив по юзернейму\n"
-            ".scan — Проверка файла на вирусы\n"
-            ".scanurl [ссылка] — Проверка ссылки на вирусы/фишинг\n"
-            ".sherlock [ник] — Поиск аккаунтов по никнейму\n"
-            ".status — Статистика чата с пользователем",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="show_inf")]
-            ])
-        )
-        await callback.answer()
-        return
-    
-    if data == "inf_admin":
-        await callback.message.edit_text(
-            "**🛠️ АДМИН-КОМАНДЫ**\n\n"
-            ".ban [ID] [время] [причина] [-s] [-g] — Забанить пользователя\n"
-            ".unban [ID] [причина] [-g] — Разбанить пользователя\n"
-            ".idlist — Список всех пользователей\n"
-            ".logs [ID] — Логи пользователя\n"
-            ".key — Создать ключ доступа\n"
-            ".tex on/off — Включить/выключить техработы\n"
-            ".stop [run/bot/max] max — Остановить раннеры",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="show_inf")]
-            ])
-        )
-        await callback.answer()
-        return
-    
-    if data == "inf_fun":
-        await callback.message.edit_text(
-            "**🌟 РАЗВЛЕКАТЕЛЬНЫЕ (1/4)**\n\n"
-            ".send — отправить фейковый чек\n"
-            ".xrocket [сумма] — фейковый чек xRocket (USDT)\n"
-            ".dox — пугающая анимация д0кса\n"
-            ".snos — пугающая анимация сн0са\n"
-            ".hack — пугающая анимация взлома\n"
-            ".ddos — пугающая анимация DDoS\n"
-            ".ban — пугающая анимация бана\n"
-            ".spam [количество] [текст] — спам\n"
-            ".love — красивая анимация сердца\n"
-            ".arg [текст] — анимация появления текста\n"
-            ".scrl [текст] — анимация прокрутки текста\n"
-            ".print [текст] — эффект печати текста\n"
-            ".glit [текст] — анимация с эффектом глитча\n"
-            ".stairs [текст] — каждое слово отдельным сообщением\n"
-            ".wave [текст] — нарастающая лесенка слов\n"
-            ".letters [текст] — каждая буква отдельным сообщением\n"
-            ".ghoul — анимация 1000-7",
-            reply_markup=get_fun_keyboard(1)
-        )
-        await callback.answer()
-        return
-    
-    if data == "fun_page_2":
-        await callback.message.edit_text(
-            "**🌟 РАЗВЛЕКАТЕЛЬНЫЕ (2/4)**\n\n"
-            ".random [мин] [макс] — случайное число\n"
-            ".flip — подбросить монетку\n"
-            ".magic8 [вопрос] — магический шар 8\n"
-            ".quote — случайная мотивационная цитата\n"
-            ".rps [выбор] — камень, ножницы, бумага\n"
-            ".slot — игровой автомат 🎰\n"
-            ".coin — выбрать орла или решку\n"
-            ".choose [вариант1 | вариант2] — случайный выбор\n"
-            ".luck — узнать уровень удачи\n"
-            ".fate — предсказать сегодняшний день\n"
-            ".гадать [ник] — гадание на картах\n"
-            ".мультик — пиксельный мультик из 🟦\n"
-            ".meme — случайный мем (фото)\n"
-            ".joke — случайная шутка\n"
-            ".memer [текст] — мем-шаблон + ваш текст",
-            reply_markup=get_fun_keyboard(2)
-        )
-        await callback.answer()
-        return
-    
-    if data == "fun_page_3":
-        await callback.message.edit_text(
-            "**🌟 РАЗВЛЕКАТЕЛЬНЫЕ (3/4)**\n\n"
-            ".password [длина] — генерация пароля\n"
-            ".nickname — случайный никнейм\n"
-            ".correct [текст] — исправить ошибки в тексте\n"
-            ".rewrite [текст] — переписать текст красивее\n"
-            ".formal [текст] — сделать текст официальным стилем\n"
-            ".short [текст] — сократить текст\n"
-            ".expand [текст] — расширить текст\n"
-            ".detect [текст] — определить язык текста\n"
-            ".translate [язык] [текст] — перевод текста\n"
-            ".fixlayout [текст] — исправить неверную раскладку\n"
-            ".summarize — краткое изложение длинного текста\n"
-            ".upper [текст] — ВЕРХНИЙ РЕГИСТР\n"
-            ".lower [текст] — нижний регистр\n"
-            ".title [текст] — Сделать Каждое Слово С Заглавной\n"
-            ".reverse [текст] — перевернуть текст\n"
-            ".leet [текст] — fraud-шрифт (привет → ПР1в3т)\n"
-            ".zalgo [текст] — добавить эффект искажения текста",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="fun_page_2")],
-                [InlineKeyboardButton(text="📋 Меню", callback_data="show_inf")]
-            ])
-        )
-        await callback.answer()
-        return
-    
-    if data == "inf_utils":
-        await callback.message.edit_text(
-            "**🛠️ УТИЛИТЫ (1/3)**\n\n"
-            ".mute [N] — мут (N мин или до .unmute)\n"
-            ".unmute — выключить мут\n"
-            ".nomute — обход мута (в чате даже под мутом; ЛС: /nomute)\n"
-            ".unnomute — выключить обход мута\n"
-            ".warn N — автомут после N сообщений\n"
-            ".unwarn — снять warn\n"
-            ".antispam on/off — антиспам\n"
-            ".a_troll / .aut_troll / .stop_troll — троллинг",
-            reply_markup=get_utils_keyboard(1)
-        )
-        await callback.answer()
-        return
-    
-    if data == "utils_page_2":
-        await callback.message.edit_text(
-            "**🛠️ УТИЛИТЫ (2/3)**\n\n"
-            ".gift — отправка подарков за Stars\n"
-            ".tool [вопрос] — ответ + топ‑3 сайта\n"
-            ".pic [описание] — поиск картинки по описанию\n"
-            ".proxies — свежие HTTP-прокси\n"
-            ".leaks [email/телефон] — проверка по слитым базам\n"
-            ".export — экспорт переписки в .txt\n"
-            ".tempmail — временная почта (inbox в боте)\n"
-            ".scam [текст] — проверка на скам/фишинг\n"
-            ".место [город/адрес] — точка на карте",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="utils_page_1")],
-                [InlineKeyboardButton(text="📋 Меню", callback_data="show_inf")]
-            ])
-        )
-        await callback.answer()
-        return
-    
-    if data == "inf_all":
-        await callback.message.edit_text(
-            "**📚 ВСЕ КОМАНДЫ**\n\n"
-            "🔹 ОСНОВНЫЕ:\n"
-            ".me, .id, .chat — информация о вас/чате\n"
-            ".business — ID бизнес-подключения\n"
-            ".meta — данные сообщения в ответе\n"
-            ".inf — показать это меню\n"
-            ".ping — проверить задержку\n"
-            ".time — текущее время МСК\n"
-            ".date — текущая дата\n"
-            ".cat — случайный кот\n"
-            ".status — статистика чата\n"
-            ".clone — включить клонирование\n"
-            ".unclone — выключить клонирование\n"
-            ".copyp — скопировать профиль\n"
-            ".uncopyp — вернуть профиль\n\n"
-            "🔹 ПРОБИВЫ:\n"
-            ".whois ip [IP] — Пробив IP\n"
-            ".whois n [номер] — Пробив номера\n"
-            ".whois qz [@username] — Пробив юзера\n"
-            ".scan — Проверка файла на вирусы\n"
-            ".scanurl [ссылка] — Проверка ссылки\n"
-            ".sherlock [ник] — Поиск аккаунтов\n\n"
-            "🔹 АДМИН:\n"
-            ".ban [ID] [время] [причина] [-s] [-g] — Бан\n"
-            ".unban [ID] [причина] [-g] — Разбан\n"
-            ".idlist — Список пользователей\n"
-            ".logs [ID] — Логи пользователя\n"
-            ".key — Создать ключ\n"
-            ".tex on/off — Техработы\n"
-            ".stop [run/bot/max] max — Остановить раннеры\n\n"
-            "🔹 РАЗВЛЕКАТЕЛЬНЫЕ:\n"
-            ".send, .xrocket, .dox, .snos, .hack, .ddos, .ban\n"
-            ".spam, .love, .arg, .scrl, .print, .glit\n"
-            ".stairs, .wave, .letters, .ghoul\n"
-            ".random, .flip, .magic8, .quote, .rps, .slot\n"
-            ".coin, .choose, .luck, .fate, .гадать, .мультик\n"
-            ".meme, .joke, .memer\n\n"
-            "🔹 УТИЛИТЫ:\n"
-            ".password, .nickname, .correct, .rewrite\n"
-            ".formal, .short, .expand, .detect\n"
-            ".translate, .fixlayout, .summarize\n"
-            ".upper, .lower, .title, .reverse, .leet, .zalgo\n"
-            ".mute, .unmute, .nomute, .unnomute\n"
-            ".warn, .unwarn, .antispam\n"
-            ".gift, .tool, .pic, .proxies, .leaks, .export\n"
-            ".tempmail, .scam, .место",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="show_inf")]
-            ])
-        )
-        await callback.answer()
-        return
-    
-    if data == "close_menu":
-        await callback.message.delete()
-        await callback.answer()
-        return
-    
-    # ===== СТАРЫЕ CALLBACK =====
-    if data == "probe_ip":
-        await callback.message.answer("🌐 ВВЕДИТЕ IP\n📌 Пример: 8.8.8.8")
-    elif data == "probe_phone":
-        await callback.message.answer("📱 ВВЕДИТЕ НОМЕР\n📌 Пример: 89001234567")
-    elif data == "probe_user":
-        await callback.message.answer("👤 ВВЕДИТЕ @USERNAME\n📌 Пример: @username")
-    await callback.answer()
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка callback: {e}")
+        try:
+            await callback.answer("❌ Ошибка", show_alert=True)
+        except:
+            pass
 
 # ========== ЛИЧНЫЕ СООБЩЕНИЯ ==========
 
