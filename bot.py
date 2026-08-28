@@ -86,135 +86,157 @@ def parse_time(time_str):
     
     return total_minutes, f"{total_minutes} минут"
 
-def format_centered(text):
-    """Центрирует текст в блоке"""
-    lines = text.split('\n')
-    max_len = max(len(line) for line in lines) if lines else 0
-    border = '━' * (max_len + 4)
-    result = f"┏{border}┓\n"
-    for line in lines:
-        padding = max_len - len(line)
-        result += f"┃ {line}{' ' * padding} ┃\n"
-    result += f"┗{border}┛"
-    return result
-
 def format_response(title, content):
     """Форматирует ответ: жирный заголовок + цитата"""
     return f"*{title}*\n\n```\n{content}\n```"
 
-# ========== ФУНКЦИИ ДЛЯ ПРИЛОЖЕНИЯ ==========
+# =====================================================
+# ФУНКЦИИ ДЛЯ ОБЩЕНИЯ С САЙТОМ
+# =====================================================
 
-async def process_app_command(command: str, user_id: int):
-    """Обрабатывает команду из приложения"""
-    try:
-        # Сохраняем команду в app_commands
-        supabase.table("app_commands").insert({
-            "user_id": user_id,
-            "command": command,
-            "status": "pending"
-        }).execute()
-        
-        result = ""
-        
-        # Обрабатываем команду
-        if command.startswith('.ban'):
-            parts = command.split()
-            if len(parts) >= 4:
-                target_id = parts[1]
-                time_str = parts[2]
-                reason = " ".join(parts[3:])
-                is_global = '-g' in parts
-                silent = '-s' in parts
-                reason = re.sub(r'\s*-[gs]\s*', ' ', reason).strip()
-                minutes, time_display = parse_time(time_str)
+async def process_web_commands():
+    """Фоновая задача — обработка команд с сайта"""
+    while True:
+        try:
+            # Ищем необработанные команды
+            result = supabase.table("web_commands").select("*").eq("status", "pending").order("id", desc=True).limit(10).execute()
+            
+            for cmd in result.data:
+                user_id = cmd.get("user_id")
+                command = cmd.get("command")
+                cmd_id = cmd.get("id")
                 
-                if add_ban(target_id, reason, user_id, minutes, is_global, silent):
-                    result = f"✅ Пользователь {target_id} забанен\n📌 Reason: {reason}\n🖥️ Server: {'глобальный' if is_global else 'локальный'}"
-                else:
-                    result = "❌ Ошибка бана"
-            else:
-                result = "❌ .ban [ID] [время] [причина] [-s] [-g]"
-        
-        elif command.startswith('.unban'):
-            parts = command.split()
-            if len(parts) >= 2:
-                target_id = parts[1]
-                is_global = '-g' in parts
-                reason = " ".join(parts[2:]) if len(parts) > 2 else "Без причины"
-                reason = re.sub(r'\s*-g\s*', ' ', reason).strip()
+                # Обрабатываем команду
+                response = await execute_web_command(command, user_id)
                 
-                if remove_ban(target_id, is_global):
-                    result = f"✅ Пользователь {target_id} разбанен\n📌 Reason: {reason}"
-                else:
-                    result = f"❌ Пользователь {target_id} не найден в черном списке"
-            else:
-                result = "❌ .unban [ID] [причина] [-g]"
+                # Обновляем статус
+                supabase.table("web_commands").update({
+                    "status": "completed",
+                    "result": response,
+                    "executed_at": datetime.now().isoformat()
+                }).eq("id", cmd_id).execute()
+                
+                # Сохраняем в чат
+                supabase.table("web_chat").insert({
+                    "user_id": user_id,
+                    "message": f"> {command}",
+                    "from_bot": False
+                }).execute()
+                
+                supabase.table("web_chat").insert({
+                    "user_id": user_id,
+                    "message": response,
+                    "from_bot": True
+                }).execute()
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка обработки веб-команд: {e}")
         
-        elif command == '.idlist':
-            users = get_all_users()
-            if users:
-                result = "👥 СПИСОК ПОЛЬЗОВАТЕЛЕЙ\n\n"
-                for user in users[:20]:
-                    result += f"🆔 {user.get('user_id', '?')} → @{user.get('username', 'Нет')}\n"
-            else:
-                result = "📊 Список пользователей пуст"
-        
-        elif command == '.key':
-            key = create_session_key()
-            result = f"🔑 Ключ: {key}"
-        
-        elif command.startswith('.logs'):
-            parts = command.split()
-            if len(parts) >= 2:
-                try:
-                    target_id = int(parts[1])
-                    count = min(int(parts[2]) if len(parts) > 2 else 10, 50)
-                    logs = get_logs_for_user(target_id, count)
-                    if logs:
-                        result = f"📋 ЛОГИ ДЛЯ {target_id} (последние {len(logs)})\n\n"
-                        for log in logs:
-                            result += f"🕐 {log.get('time', '?')}\n📝 {log.get('command', '?')}\n\n"
-                    else:
-                        result = f"📊 Логов для {target_id} нет"
-                except:
-                    result = "❌ .logs [ID] [кол-во]"
-            else:
-                result = "❌ .logs [ID] [кол-во]"
-        
-        elif command == '.help':
-            result = """📚 ДОСТУПНЫЕ КОМАНДЫ
+        await asyncio.sleep(2)  # Проверка каждые 2 секунды
 
-.ban [ID] [время] [причина] [-s] [-g] — Бан
-.unban [ID] [причина] [-g] — Разбан
+async def execute_web_command(command: str, user_id: int) -> str:
+    """Выполняет команду с сайта и возвращает результат"""
+    
+    # .help
+    if command == '.help':
+        return """📚 ДОСТУПНЫЕ КОМАНДЫ
+
+.ban [ID] [время] [причина] — Бан
+.unban [ID] — Разбан
 .idlist — Список пользователей
 .logs [ID] — Логи пользователя
 .key — Создать ключ
 .tex on/off — Техработы
-.stop [run/bot/max] max — Остановить раннеры
-.whois ip [IP] — Пробив IP
-.whois n [номер] — Пробив номера
-.whois qz [@username] — Пробив юзера"""
-        
-        else:
-            result = f"❌ Неизвестная команда: {command}"
-        
-        # Обновляем статус команды
-        supabase.table("app_commands").update({
-            "status": "completed",
-            "result": result,
-            "executed_at": datetime.now().isoformat()
-        }).eq("command", command).eq("user_id", user_id).order("id", desc=True).limit(1).execute()
-        
-        return result
+.stop [run/bot/max] max — Остановить раннеры"""
+
+    # .ban
+    if command.startswith('.ban '):
+        parts = command.split()
+        if len(parts) >= 4:
+            target_id = parts[1]
+            time_str = parts[2]
+            reason = " ".join(parts[3:])
+            is_global = '-g' in parts
+            silent = '-s' in parts
+            reason = re.sub(r'\s*-[gs]\s*', ' ', reason).strip()
+            minutes, time_display = parse_time(time_str)
             
-    except Exception as e:
-        error_msg = f"❌ Ошибка: {str(e)}"
-        supabase.table("app_commands").update({
-            "status": "failed",
-            "result": error_msg,
-            "executed_at": datetime.now().isoformat()
-        }).eq("command", command).eq("user_id", user_id).order("id", desc=True).limit(1).execute()
-        return error_msg
+            if add_ban(target_id, reason, user_id, minutes, is_global, silent):
+                return f"✅ Пользователь {target_id} забанен\n📌 Reason: {reason}\n🖥️ Server: {'глобальный' if is_global else 'локальный'}"
+            else:
+                return "❌ Ошибка бана"
+        return "❌ .ban [ID] [время] [причина]"
+
+    # .unban
+    if command.startswith('.unban '):
+        parts = command.split()
+        if len(parts) >= 2:
+            target_id = parts[1]
+            is_global = '-g' in parts
+            reason = " ".join(parts[2:]) if len(parts) > 2 else "Без причины"
+            reason = re.sub(r'\s*-g\s*', ' ', reason).strip()
+            
+            if remove_ban(target_id, is_global):
+                return f"✅ Пользователь {target_id} разбанен\n📌 Reason: {reason}"
+            else:
+                return f"❌ Пользователь {target_id} не найден в черном списке"
+        return "❌ .unban [ID] [причина]"
+
+    # .idlist
+    if command == '.idlist':
+        users = get_all_users()
+        if users:
+            result = "👥 СПИСОК ПОЛЬЗОВАТЕЛЕЙ\n\n"
+            for user in users[:20]:
+                result += f"🆔 {user.get('user_id', '?')} → @{user.get('username', 'Нет')}\n"
+            return result
+        return "📊 Список пользователей пуст"
+
+    # .key
+    if command == '.key':
+        key = create_session_key()
+        return f"🔑 Ключ: {key}"
+
+    # .logs
+    if command.startswith('.logs '):
+        parts = command.split()
+        if len(parts) >= 2:
+            try:
+                target_id = int(parts[1])
+                count = min(int(parts[2]) if len(parts) > 2 else 10, 50)
+                logs = get_logs_for_user(target_id, count)
+                if logs:
+                    result = f"📋 ЛОГИ ДЛЯ {target_id} (последние {len(logs)})\n\n"
+                    for log in logs:
+                        result += f"🕐 {log.get('time', '?')}\n📝 {log.get('command', '?')}\n\n"
+                    return result
+                return f"📊 Логов для {target_id} нет"
+            except:
+                return "❌ .logs [ID] [кол-во]"
+        return "❌ .logs [ID] [кол-во]"
+
+    # .tex on
+    if command == '.tex on':
+        minutes = 60
+        expires_at = (datetime.now() + timedelta(minutes=minutes)).isoformat()
+        set_tech_mode(True, expires_at)
+        return f"✅ ТЕХ-РАБОТЫ ВКЛЮЧЕНЫ\n🕐 Окончание: {(datetime.now() + timedelta(minutes=minutes)).strftime('%d.%m.%Y %H:%M')}"
+
+    if command == '.tex off':
+        set_tech_mode(False, None)
+        return "✅ ТЕХ-РАБОТЫ ВЫКЛЮЧЕНЫ"
+
+    # .stop
+    if command.startswith('.stop '):
+        parts = command.split()
+        if len(parts) >= 3:
+            target = parts[1].lower()
+            action = parts[2].lower()
+            if target in ['run', 'bot', 'max'] and action == 'max':
+                return await stop_runners(target, user_id, "web_console")
+        return "❌ .stop [run/bot/max] max"
+
+    return f"❌ Неизвестная команда: {command}"
 
 # ========== SUPABASE ФУНКЦИИ ==========
 
@@ -1010,7 +1032,6 @@ async def handle_business_message(message: types.Message):
         # .copyp / .uncopyp
         if text.lower() == '.copyp' and message.reply_to_message:
             target = message.reply_to_message.from_user
-            # Сохраняем в память (для простоты)
             await send_to_business_chat(
                 chat_id,
                 f"✅ Профиль скопирован!\n\n"
@@ -1275,8 +1296,6 @@ async def handle_business_message(message: types.Message):
                     f"🔇 Чат замучен на {minutes} минут",
                     connection_id
                 )
-                # Автоматический размут
-                asyncio.create_task(auto_unmute(chat_id, minutes))
             except:
                 await send_to_business_chat(chat_id, "❌ .mute [N]", connection_id)
             return
@@ -2103,10 +2122,13 @@ async def main():
     print(f"📁 Supabase: {SUPABASE_URL}")
     print("📌 Команды с / — в личке бота")
     print("📌 Команды с . — в чатах с собеседниками")
-    print("📌 .inf — новое меню команд")
+    print("📌 Веб-команды — через сайт")
     print("=" * 60)
     
     os.makedirs('data', exist_ok=True)
+    
+    # Запускаем обработку веб-команд в фоне
+    asyncio.create_task(process_web_commands())
     
     try:
         await dp.start_polling(bot)
