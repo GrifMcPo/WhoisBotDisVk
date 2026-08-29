@@ -86,19 +86,10 @@ def parse_time(time_str):
     return total_minutes, f"{total_minutes} минут"
 
 def format_response(title, content):
-    """Форматирует ответ: жирный заголовок + центрированное содержимое (без символов)"""
+    """Форматирует ответ: жирный заголовок + цитата (как в Telegram)"""
     lines = content.split('\n')
-    max_len = max(len(line) for line in lines) if lines else 0
-    
-    centered_lines = []
-    for line in lines:
-        padding = max_len - len(line)
-        left_pad = padding // 2
-        right_pad = padding - left_pad
-        centered_lines.append(f"{' ' * left_pad}{line}{' ' * right_pad}")
-    
-    centered = '\n'.join(centered_lines)
-    return f"*{title}*\n\n```\n{centered}\n```"
+    quoted = '\n'.join([f"│ {line}" for line in lines])
+    return f"*{title}*\n\n{quoted}"
 
 # ========== SUPABASE ФУНКЦИИ ==========
 
@@ -724,9 +715,7 @@ async def handle_business_message(message: types.Message):
                 chat_id,
                 format_response(
                     "Ваш профиль",
-                    f"ID: {user.id}\n"
-                    f"Ник: @{user.username or 'Нет'}\n"
-                    f"Роль: {'админ' if is_admin(user.id) else 'пользователь'}"
+                    f"ID: {user.id}\nНик: @{user.username or 'Нет'}\nРоль: {'админ' if is_admin(user.id) else 'пользователь'}"
                 ),
                 connection_id
             )
@@ -738,8 +727,7 @@ async def handle_business_message(message: types.Message):
                 chat_id,
                 format_response(
                     "Идентификаторы",
-                    f"Ваш Telegram ID: {message.from_user.id}\n"
-                    f"ID чата: {chat_id}"
+                    f"Ваш Telegram ID: {message.from_user.id}\nID чата: {chat_id}"
                 ),
                 connection_id
             )
@@ -752,8 +740,7 @@ async def handle_business_message(message: types.Message):
                 chat_id,
                 format_response(
                     "Информация о чате",
-                    f"ID: {chat.id}\n"
-                    f"Название: {chat.title or 'личный чат'}"
+                    f"ID: {chat.id}\nНазвание: {chat.title or 'личный чат'}"
                 ),
                 connection_id
             )
@@ -789,8 +776,7 @@ async def handle_business_message(message: types.Message):
                 chat_id,
                 format_response(
                     "Текущая дата",
-                    f"{get_msk_date_full()}\n"
-                    f"TZ: Europe/Moscow"
+                    f"{get_msk_date_full()}\nTZ: Europe/Moscow"
                 ),
                 connection_id
             )
@@ -806,10 +792,7 @@ async def handle_business_message(message: types.Message):
                 chat_id,
                 format_response(
                     "🏓 Pong",
-                    f"API: {ping_ms:.0f} мс\n"
-                    f"TCP: {ping_ms * 0.5:.0f} мс\n"
-                    f"Бот: @{bot.username}\n"
-                    f"Статус: ✅ онлайн"
+                    f"API: {ping_ms:.0f} мс\nTCP: {ping_ms * 0.5:.0f} мс\nБот: @{bot.username}\nСтатус: ✅ онлайн"
                 ),
                 connection_id
             )
@@ -842,10 +825,7 @@ async def handle_business_message(message: types.Message):
                 chat_id,
                 format_response(
                     "Статистика пользователя",
-                    f"{reply.from_user.full_name} (@{reply.from_user.username or 'Нет'})\n"
-                    f"ID: {target_user_id}\n"
-                    f"Всего команд: {log_count}\n\n"
-                    f"Последние команды:\n{last_commands}"
+                    f"{reply.from_user.full_name} (@{reply.from_user.username or 'Нет'})\nID: {target_user_id}\nВсего команд: {log_count}\n\nПоследние команды:\n{last_commands}"
                 ),
                 connection_id
             )
@@ -867,11 +847,7 @@ async def handle_business_message(message: types.Message):
             target = message.reply_to_message.from_user
             await send_to_business_chat(
                 chat_id,
-                f"✅ Профиль скопирован!\n\n"
-                f"Имя: {target.full_name}\n"
-                f"Username: @{target.username or 'Нет'}\n"
-                f"ID: {target.id}\n\n"
-                f"Используй .uncopyp чтобы вернуть свой профиль",
+                f"✅ Профиль скопирован!\n\nИмя: {target.full_name}\nUsername: @{target.username or 'Нет'}\nID: {target.id}\n\nИспользуй .uncopyp чтобы вернуть свой профиль",
                 connection_id
             )
             return
@@ -1019,8 +995,7 @@ async def handle_business_message(message: types.Message):
             bot_choice = random.choice(options)
             await send_to_business_chat(
                 chat_id,
-                f"🤖 Мой выбор: *{bot_choice}*\n\n"
-                f"Твой выбор: *{choice}*",
+                f"🤖 Мой выбор: *{bot_choice}*\n\nТвой выбор: *{choice}*",
                 connection_id
             )
             return
@@ -1032,8 +1007,7 @@ async def handle_business_message(message: types.Message):
             is_win = len(set(result)) == 1
             await send_to_business_chat(
                 chat_id,
-                f"🎰 *{result[0]} {result[1]} {result[2]}*\n\n"
-                f"{'🎉 ПОБЕДА!' if is_win else '😔 Попробуй ещё'}",
+                f"🎰 *{result[0]} {result[1]} {result[2]}*\n\n{'🎉 ПОБЕДА!' if is_win else '😔 Попробуй ещё'}",
                 connection_id
             )
             return
@@ -1175,8 +1149,7 @@ async def handle_business_message(message: types.Message):
                     email = f"{random_part}@{domain}"
                     await send_to_business_chat(
                         chat_id,
-                        f"📧 Временная почта создана:\n`{email}`\n\n"
-                        f"Используйте .inbox чтобы проверить почту",
+                        f"📧 Временная почта создана:\n`{email}`\n\nИспользуйте .inbox чтобы проверить почту",
                         connection_id
                     )
                 else:
@@ -1192,9 +1165,7 @@ async def handle_business_message(message: types.Message):
             is_scam = any(word in scam_text.lower() for word in suspicious)
             await send_to_business_chat(
                 chat_id,
-                f"*🔍 Проверка на скам/фишинг*\n\n"
-                f"Текст: {scam_text}\n"
-                f"Статус: {'⚠️ ПОДОЗРИТЕЛЬНО' if is_scam else '✅ БЕЗОПАСНО'}",
+                f"*🔍 Проверка на скам/фишинг*\n\nТекст: {scam_text}\nСтатус: {'⚠️ ПОДОЗРИТЕЛЬНО' if is_scam else '✅ БЕЗОПАСНО'}",
                 connection_id
             )
             return
@@ -1218,8 +1189,7 @@ async def handle_business_message(message: types.Message):
             if len(parts) < 4:
                 await send_to_business_chat(
                     chat_id,
-                    "❌ .ban [ID] [время] [причина] [-s] [-g]\n"
-                    "Пример: .ban 123456 1h Спам -s -g",
+                    "❌ .ban [ID] [время] [причина] [-s] [-g]\nПример: .ban 123456 1h Спам -s -g",
                     connection_id
                 )
                 return
@@ -1241,9 +1211,7 @@ async def handle_business_message(message: types.Message):
                         user_id,
                         format_response(
                             "Пользователь успешно заблокирован!",
-                            f"ID: {target_id}\n"
-                            f"Причина: {reason}\n"
-                            f"Сервер: {'глобальный' if is_global else 'локальный'}"
+                            f"ID: {target_id}\nПричина: {reason}\nСервер: {'глобальный' if is_global else 'локальный'}"
                         ),
                         parse_mode="Markdown"
                     )
@@ -1252,9 +1220,7 @@ async def handle_business_message(message: types.Message):
                         chat_id,
                         format_response(
                             "Пользователь успешно заблокирован!",
-                            f"ID: {target_id}\n"
-                            f"Причина: {reason}\n"
-                            f"Сервер: {'глобальный' if is_global else 'локальный'}"
+                            f"ID: {target_id}\nПричина: {reason}\nСервер: {'глобальный' if is_global else 'локальный'}"
                         ),
                         connection_id
                     )
@@ -1262,9 +1228,7 @@ async def handle_business_message(message: types.Message):
                 try:
                     ban_msg = format_response(
                         "Вас заблокировали в боте!",
-                        f"Причина: {reason}\n"
-                        f"Время: {time_display}\n"
-                        f"Сервер: {'глобальный' if is_global else 'локальный'}"
+                        f"Причина: {reason}\nВремя: {time_display}\nСервер: {'глобальный' if is_global else 'локальный'}"
                     )
                     if not minutes:
                         ban_msg += "\n\n⚠️ Блокировка выдана навсегда"
@@ -1299,9 +1263,7 @@ async def handle_business_message(message: types.Message):
                     chat_id,
                     format_response(
                         "Пользователь разбанен!",
-                        f"ID: {target_id}\n"
-                        f"Причина: {reason}\n"
-                        f"Сервер: {'глобальный' if is_global else 'локальный'}"
+                        f"ID: {target_id}\nПричина: {reason}\nСервер: {'глобальный' if is_global else 'локальный'}"
                     ),
                     connection_id
                 )
